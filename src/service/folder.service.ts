@@ -6,6 +6,8 @@ import type { CourseDocument } from '../model/course.schema.js';
 import { Folder } from '../model/folder.schema.js';
 import type { FolderDocument } from '../model/folder.schema.js';
 import type { CourseDto } from '../dto/course.dto.js';
+import { Material } from '../model/material.schema.js';
+import type { MaterialDocument } from '../model/material.schema.js';
 import { validateFolder } from '../dto/folder.dto.js';
 
 const MAX_DEPTH = 10;
@@ -26,7 +28,8 @@ function response(folder: FolderDocument) {
 @Injectable()
 export class FolderService {
     constructor(@InjectModel(Course.name) private readonly courses: Model<CourseDocument>,
-        @InjectModel(Folder.name) private readonly folders: Model<FolderDocument>) {}
+        @InjectModel(Folder.name) private readonly folders: Model<FolderDocument>,
+        @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>) {}
 
     private async course(owner: Types.ObjectId, courseId: string) {
         const filter = { _id: id(courseId, 'course'), owner };
@@ -48,7 +51,7 @@ export class FolderService {
         }
     }
 
-    private async write<T>(owner: Types.ObjectId, courseId: string, work: (scope: {owner: Types.ObjectId; course: Types.ObjectId}, session: ClientSession) => Promise<T>) {
+    async withCourse<T>(owner: Types.ObjectId, courseId: string, work: (scope: {owner: Types.ObjectId; course: Types.ObjectId}, session: ClientSession) => Promise<T>) {
         const course = id(courseId, 'course');
         return this.transaction(async (session) => {
             const locked = await this.courses.findOneAndUpdate({ _id: course, owner }, { $inc: { treeRevision: 1 } }, { session, returnDocument: 'after' });
@@ -84,6 +87,18 @@ export class FolderService {
         return ancestors;
     }
 
+    async location(owner: Types.ObjectId, courseId: string, folderId: string | null) {
+        const scope = await this.course(owner, courseId);
+        if (folderId !== null && (typeof folderId !== 'string' || !folderId)) throw new BadRequestException('Invalid folder ID');
+        await this.ancestry(scope, folderId);
+        return scope;
+    }
+
+    async destination(owner: Types.ObjectId, course: Types.ObjectId, folder: string | null, session: ClientSession) {
+        const ancestors = await this.ancestry({ owner, course }, folder, session);
+        return [...ancestors].reverse().find((item) => item.materialType)?.materialType ?? '';
+    }
+
     async list(owner: Types.ObjectId, courseId: string, parent?: string) {
         if (parent !== undefined) id(parent, 'parent');
         const scope = await this.course(owner, courseId);
@@ -102,7 +117,7 @@ export class FolderService {
         const parent = (input as Record<string, unknown>).parent;
         if (parent !== undefined && parent !== null && typeof parent !== 'string') throw new BadRequestException('Invalid parent ID');
         if (parent === '') throw new BadRequestException('Invalid parent ID');
-        return this.write(owner, courseId, async (scope, session) => {
+        return this.withCourse(owner, courseId, async (scope, session) => {
             const ancestors = await this.ancestry(scope, (parent as string | null | undefined) ?? null, session);
             if (ancestors.length >= MAX_DEPTH) throw new BadRequestException('Folders can be nested up to 10 levels');
             const [folder] = await this.folders.create([{ ...fields, ...scope, parent: parent ? id(parent as string, 'parent') : null }], { session });
@@ -113,7 +128,7 @@ export class FolderService {
         if (input && typeof input === 'object' && 'parent' in input) throw new BadRequestException('Moving folders is not supported');
         const fields = validateFolder(input, true);
         id(folderId, 'folder');
-        return this.write(owner, courseId, async (scope, session) => {
+        return this.withCourse(owner, courseId, async (scope, session) => {
             const ancestors = await this.ancestry(scope, folderId, session);
             if (fields.name !== undefined && isStarter(ancestors[ancestors.length - 1])) {
                 throw new ForbiddenException('Starter folders cannot be renamed');
@@ -125,18 +140,18 @@ export class FolderService {
     }
     async delete(owner: Types.ObjectId, courseId: string, folderId: string) {
         id(folderId, 'folder');
-        return this.write(owner, courseId, async (scope, session) => {
+        return this.withCourse(owner, courseId, async (scope, session) => {
             const ancestors = await this.ancestry(scope, folderId, session);
             const folder = ancestors[ancestors.length - 1];
             if (isStarter(folder)) throw new ForbiddenException('Starter folders cannot be deleted');
-            // Phase 1.4 must also check documents here before uploads are enabled.
+            if (await this.materials.exists({ ...scope, folder: folder._id }).session(session)) throw new ConflictException('Remove documents before deleting this folder');
             if (await this.folders.exists({ ...scope, parent: folder._id }).session(session)) throw new ConflictException('Only empty folders can be deleted');
             await this.folders.deleteOne({ ...scope, _id: folder._id }, { session });
         });
     }
     async deleteCourse(owner: Types.ObjectId, courseId: string) {
-        return this.write(owner, courseId, async (scope, session) => {
-            // Phase 1.4 must also check course documents before uploads are enabled.
+        return this.withCourse(owner, courseId, async (scope, session) => {
+            if (await this.materials.exists(scope).session(session)) throw new ConflictException('Remove documents and wait for pending uploads or cleanup before deleting this course');
             const contained = await this.folders.find(scope).session(session);
             if (contained.some((folder) => folder.parent || !isStarter(folder))) {
                 throw new ConflictException('Remove custom folders and contents before deleting this course. Empty starter folders are removed automatically.');

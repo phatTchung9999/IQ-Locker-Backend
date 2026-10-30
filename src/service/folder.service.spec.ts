@@ -7,7 +7,7 @@ import { FolderService } from './folder.service.js';
 import { CourseService } from './course.service.js';
 import { courseModelFixture } from '../../test/fixtures/course-model.js';
 const fixture = courseModelFixture();
-const service = new FolderService(fixture.CourseModel as any, fixture.FolderModel as any);
+const service = new FolderService(fixture.CourseModel as any, fixture.FolderModel as any, fixture.MaterialModel as any);
 const courses = new CourseService(fixture.CourseModel as any, service);
 const owner = new Types.ObjectId(), other = new Types.ObjectId();
 let course: string, foreignCourse: string;

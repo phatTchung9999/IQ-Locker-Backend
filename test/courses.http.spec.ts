@@ -8,6 +8,11 @@ import { Types } from 'mongoose';
 import request from 'supertest';
 import { FolderController } from '../src/controller/folder.controller.js';
 import { FolderService } from '../src/service/folder.service.js';
+import { MaterialController } from '../src/controller/material.controller.js';
+import { MaterialService } from '../src/service/material.service.js';
+import { BlobStorageService } from '../src/storage/blob-storage.service.js';
+import { Readable } from 'node:stream';
+import { Material, StorageUsage } from '../src/model/material.schema.js';
 import { Folder } from '../src/model/folder.schema.js';
 import { CourseController } from '../src/controller/course.controller.js';
 import { CourseService } from '../src/service/course.service.js';
@@ -17,6 +22,9 @@ import { isAuthenticated } from '../src/app.middleware.js';
 import { courseModelFixture } from './fixtures/course-model.js';
 
 const fixture = courseModelFixture();
+const blobs = new Map<string, Buffer>();
+const storage = { ensureReady: async () => {}, upload: async (key: string, buffer: Buffer) => { blobs.set(key, buffer); },
+  remove: async (key: string) => { blobs.delete(key); }, download: async (key: string) => Readable.from(blobs.get(key)!) };
 const jwt = new JwtService({ secret: 'course-http-test-only' });
 const users = [
   { _id: new Types.ObjectId(), fullname: 'Test Student A', email: 'student-a@example.test' },
@@ -24,12 +32,12 @@ const users = [
 ];
 const token = (index: number) => `Bearer ${jwt.sign({ email: users[index].email })}`;
 @Module({
-  controllers: [CourseController, FolderController],
-  providers: [CourseService, FolderService, { provide: getModelToken(Folder.name), useValue: fixture.FolderModel }, { provide: getModelToken(Course.name), useValue: fixture.CourseModel },
+  controllers: [CourseController, FolderController, MaterialController],
+  providers: [CourseService, FolderService, MaterialService, { provide: BlobStorageService, useValue: storage }, { provide: getModelToken(StorageUsage.name), useValue: fixture.UsageModel }, { provide: getModelToken(Material.name), useValue: fixture.MaterialModel }, { provide: getModelToken(Folder.name), useValue: fixture.FolderModel }, { provide: getModelToken(Course.name), useValue: fixture.CourseModel },
     { provide: JwtService, useValue: jwt }, { provide: UserService, useValue: { getOne: async (email: string) => users.find((user) => user.email === email) ?? null } }],
 })
 class CourseTestModule {
-  configure(consumer: MiddlewareConsumer) { consumer.apply(isAuthenticated).forRoutes(CourseController, FolderController); }
+  configure(consumer: MiddlewareConsumer) { consumer.apply(isAuthenticated).forRoutes(CourseController, FolderController, MaterialController); }
 }
 let app: INestApplication;
 beforeAll(async () => {
@@ -38,7 +46,7 @@ beforeAll(async () => {
   await app.listen(0, '127.0.0.1');
 });
 afterAll(async () => { await app?.close(); });
-beforeEach(() => { fixture.stored.clear(); fixture.folders.clear(); });
+beforeEach(() => { fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); blobs.clear(); });
 
 it.each(['get', 'post', 'patch', 'delete'] as const)('rejects missing and invalid credentials on %s', async (method) => {
   const url = method === 'patch' || method === 'delete' ? `/api/v1/courses/${new Types.ObjectId()}` : '/api/v1/courses';
@@ -101,4 +109,42 @@ it('protects nested folder endpoints and handles a folder lifecycle', async () =
   await request(app.getHttpServer()).delete(`${path}/${child.body.id}`).set('Authorization', token(0)).expect(204);
   const list = await request(app.getHttpServer()).get(path).set('Authorization', token(0)).expect(200);
   expect(list.body.folders).toHaveLength(5);
+});
+
+it('protects all document routes and performs a private multipart round trip', async () => {
+  const created = await request(app.getHttpServer()).post('/api/v1/courses').set('Authorization', token(0)).send({ name: 'Materials' }).expect(201);
+  const root = `/api/v1/courses/${created.body.id}`;
+  const path = `${root}/materials`;
+  for (const method of ['get', 'post', 'patch', 'delete'] as const) {
+    const target = method === 'patch' || method === 'delete' ? `${path}/${new Types.ObjectId()}` : path;
+    await request(app.getHttpServer())[method](target).send({ title: 'Test' }).expect(401);
+  }
+  const original = '<script>alert(1)</script> notes';
+  const uploaded = await request(app.getHttpServer()).post(path).set('Authorization', token(0)).attach('file', Buffer.from(original), 'notes.txt').expect(201);
+  expect(uploaded.body).toMatchObject({ title: 'notes', state: 'ready', mediaType: 'text/plain' });
+  expect(uploaded.body).not.toHaveProperty('storageKey'); expect(uploaded.body).not.toHaveProperty('owner');
+  const detail = `${path}/${uploaded.body.id}`;
+  const listed = await request(app.getHttpServer()).get(path).set('Authorization', token(0)).expect(200);
+  expect(listed.body.materials).toHaveLength(1); expect(listed.body.usage.usedBytes).toBe(Buffer.byteLength(original));
+  for (const method of ['get', 'patch', 'delete'] as const) await request(app.getHttpServer())[method](detail).set('Authorization', token(1)).send({ title: 'Stolen' }).expect(404);
+  await request(app.getHttpServer()).get(`${detail}/content`).expect(401);
+  await request(app.getHttpServer()).get(`${detail}/content`).set('Authorization', token(1)).expect(404);
+  const content = await request(app.getHttpServer()).get(`${detail}/content`).set('Authorization', token(0)).expect(200);
+  expect(content.text).toBe(original); expect(content.headers['x-content-type-options']).toBe('nosniff');
+  expect(content.headers['cache-control']).toContain('no-store');
+  const download = await request(app.getHttpServer()).get(`${detail}/content?download=1`).set('Authorization', token(0)).expect(200);
+  expect(download.headers['content-disposition']).toContain('attachment');
+  await request(app.getHttpServer()).patch(detail).set('Authorization', token(0)).send({ title: 'New title', storageKey: 'stolen' }).expect(200);
+  await request(app.getHttpServer()).delete(root).set('Authorization', token(0)).expect(409);
+  await request(app.getHttpServer()).delete(detail).set('Authorization', token(0)).expect(204);
+  await request(app.getHttpServer()).delete(root).set('Authorization', token(0)).expect(204);
+  expect(blobs.size).toBe(0);
+});
+it('rejects invalid multipart files and oversized uploads without storing files', async () => {
+  const created = await request(app.getHttpServer()).post('/api/v1/courses').set('Authorization', token(0)).send({ name: 'Validation' }).expect(201);
+  const path = `/api/v1/courses/${created.body.id}/materials`;
+  await request(app.getHttpServer()).post(path).set('Authorization', token(0)).attach('file', Buffer.from('not PDF'), { filename: 'fake.pdf', contentType: 'application/pdf' }).expect(400);
+  await request(app.getHttpServer()).post(path).set('Authorization', token(0)).attach('file', Buffer.alloc(20_000_001, 65), 'large.txt').expect(413);
+  await request(app.getHttpServer()).post(path).set('Authorization', token(0)).attach('file', Buffer.from('a'), 'a.txt').attach('file', Buffer.from('b'), 'b.txt').expect(400);
+  expect(blobs.size).toBe(0); expect(fixture.materials.size).toBe(0);
 });

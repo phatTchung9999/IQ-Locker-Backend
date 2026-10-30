@@ -10,8 +10,8 @@ import { validateCourse } from '../dto/course.dto.js';
 
 const owner = new Types.ObjectId();
 const otherOwner = new Types.ObjectId();
-const { CourseModel: FakeCourseModel, FolderModel, stored, folders } = courseModelFixture();
-const folderService = new FolderService(FakeCourseModel as any, FolderModel as any);
+const { CourseModel: FakeCourseModel, FolderModel, MaterialModel, stored, folders } = courseModelFixture();
+const folderService = new FolderService(FakeCourseModel as any, FolderModel as any, MaterialModel as any);
 const service = new CourseService(FakeCourseModel as unknown as Model<CourseDocument>, folderService);
 beforeEach(() => { stored.clear(); folders.clear(); });
 

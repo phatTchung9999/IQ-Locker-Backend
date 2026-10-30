@@ -12,7 +12,7 @@ import { UserController } from './controller/user.controller.js';
 import { Video, VideoSchema } from './model/video.schema.js';
 import { User, UserSchema } from './model/user.schema.js';
 import { JwtModule } from '@nestjs/jwt';
-import { secret } from './utils/constants.js';
+import { getJwtSecret } from './utils/constants.js';
 import { join } from 'node:path';
 import { Server } from 'http';
 import { MulterModule } from '@nestjs/platform-express';
@@ -24,6 +24,10 @@ import { Course, CourseSchema } from './model/course.schema.js';
 import { FolderController } from './controller/folder.controller.js';
 import { FolderService } from './service/folder.service.js';
 import { Folder, FolderSchema } from './model/folder.schema.js';
+import { Material, MaterialSchema, StorageUsage, StorageUsageSchema } from './model/material.schema.js';
+import { MaterialController } from './controller/material.controller.js';
+import { MaterialService } from './service/material.service.js';
+import { BlobStorageService } from './storage/blob-storage.service.js';
 import { isAuthenticated } from './app.middleware.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
@@ -34,7 +38,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     // telemetry, alarms, and more — out of the box. Sign up at https://observe.nestjs.com
     MongooseModule.forRoot(process.env.MONGO_URI ?? 'mongodb://localhost:27017/Stream',),
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
-    MongooseModule.forFeature([{ name: Video.name, schema: VideoSchema }, { name: Course.name, schema: CourseSchema }, { name: Folder.name, schema: FolderSchema }]),
+    MongooseModule.forFeature([{ name: Video.name, schema: VideoSchema }, { name: Course.name, schema: CourseSchema }, { name: Folder.name, schema: FolderSchema }, { name: Material.name, schema: MaterialSchema }, { name: StorageUsage.name, schema: StorageUsageSchema }]),
     MulterModule.register({
       storage: diskStorage({
         destination: './public',
@@ -50,7 +54,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
       serviceId: 'backend',
     }),
     JwtModule.register({
-      secret,
+      secret: getJwtSecret(),
       signOptions: { expiresIn: '2h' },
     }),
     ServeStaticModule.forRoot({
@@ -58,8 +62,8 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     }),
 
   ],
-  controllers: [AppController, VideoController, UserController, CourseController, FolderController],
-  providers: [AppService, VideoService, UserService, CourseService, FolderService],
+  controllers: [AppController, VideoController, UserController, CourseController, FolderController, MaterialController],
+  providers: [AppService, VideoService, UserService, CourseService, FolderService, MaterialService, BlobStorageService],
 })
 export class AppModule {
     configure(consumer: MiddlewareConsumer) {
@@ -72,6 +76,7 @@ export class AppModule {
         VideoController,
         CourseController,
         FolderController,
+        MaterialController,
         { path: 'api/v1/user/me', method: RequestMethod.GET },
         { path: 'api/v1/user/me', method: RequestMethod.PATCH },
       );

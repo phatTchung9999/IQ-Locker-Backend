@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { Mongoose, Types } from 'mongoose';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CourseSchema } from '../src/model/course.schema.js';
+import { MaterialSchema } from '../src/model/material.schema.js';
 import { FolderSchema } from '../src/model/folder.schema.js';
 import { CourseService } from '../src/service/course.service.js';
 import { FolderService } from '../src/service/folder.service.js';
@@ -14,17 +15,18 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('MongoDB folder transac
   const prefix = `iqlocker_phase13_test_${new Types.ObjectId()}`;
   const CourseModel = database.model('Phase13Course', CourseSchema.clone(), `${prefix}_courses`);
   const FolderModel = database.model('Phase13Folder', FolderSchema.clone(), `${prefix}_folders`);
-  const folders = new FolderService(CourseModel as any, FolderModel as any);
+  const MaterialModel = database.model('Phase13Material', MaterialSchema.clone(), `${prefix}_materials`);
+  const folders = new FolderService(CourseModel as any, FolderModel as any, MaterialModel as any);
   const courses = new CourseService(CourseModel as any, folders);
   const owner = new Types.ObjectId(), foreign = new Types.ObjectId();
   beforeAll(async () => {
     await database.connect(process.env.MONGO_URI ?? 'mongodb://localhost:27017/Stream', { serverSelectionTimeoutMS: 8000 });
-    await Promise.all([CourseModel.init(), FolderModel.init()]);
+    await Promise.all([CourseModel.init(), FolderModel.init(), MaterialModel.init()]);
   }, 20000);
   afterAll(async () => {
     try {
       if (database.connection.readyState === 1) {
-        for (const model of [CourseModel, FolderModel]) {
+        for (const model of [CourseModel, FolderModel, MaterialModel]) {
           if (!model.collection.name.startsWith(prefix)) throw new Error('Invalid test collection');
           await model.collection.drop().catch((error) => { if (error.code !== 26) throw error; });
         }
