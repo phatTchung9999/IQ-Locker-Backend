@@ -7,7 +7,10 @@ export function courseModelFixture() {
   const folders = new Map<string, any>();
   const materials = new Map<string, any>();
   const usage = new Map<string, any>();
-  const allRecords = [stored, folders, materials, usage];
+  const jobs = new Map<string, any>();
+  const extractions = new Map<string, any>();
+  const chunks = new Map<string, any>();
+  const allRecords = [stored, folders, materials, usage, jobs, extractions, chunks];
   const equal = (a: any, b: any) => a == null && b == null || a?.toString() === b?.toString();
   const matches = (item: any, filter: any): boolean => Object.entries(filter).every(([key, value]: [string, any]) => {
     if (key === '$or') return value.some((part: any) => matches(item, part));
@@ -18,10 +21,11 @@ export function courseModelFixture() {
     return equal(item[key], value);
   });
   const query = (run: () => any): any => ({
+    skip(offset: number) { return query(() => run().slice(offset)); },
     limit(count: number) { return query(() => run().slice(0, count)); },
     catch(reject: any) { return Promise.resolve().then(run).catch(reject); },
     exec: async () => run(), session() { return this; },
-    sort(sort: any) { return query(() => { const items = run(); return Object.keys(sort)[0] === 'nameKey' ? items.sort((a: any, b: any) => a.nameKey.localeCompare(b.nameKey)) : items.reverse(); }); },
+    sort(sort: any) { return query(() => run().sort((a: any, b: any) => { for (const [key, direction] of Object.entries(sort)) { const left = a[key], right = b[key]; if (left < right) return -(direction as number); if (left > right) return direction as number; } return 0; })); },
     then(resolve: any, reject: any) { return Promise.resolve().then(run).then(resolve, reject); },
   });
   let tail = Promise.resolve();
@@ -31,12 +35,13 @@ export function courseModelFixture() {
     tail = new Promise<void>((resolve) => { release = resolve; });
     await previous;
     const before = allRecords.map((records) => [...records].map(([key, value]) => [key, { ...value }] as const));
-    try { return await work({}); }
+    try { return await work({ inTransaction: () => true }); }
     catch (error) { allRecords.forEach((records, index) => { records.clear(); before[index].forEach(([key, value]) => records.set(key, value)); }); throw error; }
     finally { release(); }
   } };
   function model(records: Map<string, any>, folder = false) {
     const unique = (item: any) => {
+      if (records === jobs && [...records.values()].some((other) => !equal(other._id, item._id) && equal(other.material, item.material) && other.materialVersion === item.materialVersion)) throw Object.assign(new Error('Duplicate job'), { code: 11000 });
       if (!folder) return;
       const conflict = [...records.values()].some((other) => !equal(other._id, item._id) && equal(other.owner, item.owner) && equal(other.course, item.course) &&
         (equal(other.parent, item.parent) && other.nameKey === item.nameKey || item.starterKey && other.starterKey === item.starterKey));
@@ -48,6 +53,7 @@ export function courseModelFixture() {
       constructor(fields: any) { this.record = { ...fields, _id: fields._id ?? new Types.ObjectId(), version: 1, processingStatus: 'not_started', cleanupLeaseUntil: null, bytes: fields.bytes ?? 0, revision: 0, ...(folder ? { parent: fields.parent ?? null, materialType: fields.materialType ?? '' } : { code: fields.code ?? '', semester: fields.semester ?? '' }), createdAt: new Date(), updatedAt: new Date() }; }
       async save() { unique(this.record); records.set(this.record._id.toString(), this.record); return this.record; }
       static async create(items: any[]) { return Promise.all(items.map((item) => new this(item).save())); }
+      static async insertMany(items: any[]) { return this.create(items); }
       static find(filter: any) { return query(() => [...records.values()].filter((item) => matches(item, filter))); }
       static findOne(filter: any) { return query(() => [...records.values()].find((item) => matches(item, filter)) ?? null); }
       static findById(id: any) { return this.findOne({ _id: id }); }
@@ -62,6 +68,7 @@ export function courseModelFixture() {
         unique(next); Object.assign(item, next); return item;
       }); }
       static updateOne(filter: any, update: any, options?: any) { return this.findOneAndUpdate(filter, update, options); }
+      static deleteMany(filter: any) { return query(() => { let deletedCount = 0; for (const [key, item] of records) if (matches(item, filter)) { records.delete(key); deletedCount++; } return { deletedCount }; }); }
       static deleteOne(filter: any) { return this.findOneAndDelete(filter); }
       static findOneAndDelete(filter: any) { return query(() => {
         const item = [...records.values()].find((record) => matches(record, filter));
@@ -69,5 +76,5 @@ export function courseModelFixture() {
       }); }
     };
   }
-  return { CourseModel: model(stored), FolderModel: model(folders, true), MaterialModel: model(materials), UsageModel: model(usage), stored, folders, materials, usage };
+  return { CourseModel: model(stored), FolderModel: model(folders, true), MaterialModel: model(materials), UsageModel: model(usage), JobModel: model(jobs), ExtractionModel: model(extractions), ChunkModel: model(chunks), stored, folders, materials, usage, jobs, extractions, chunks };
 }

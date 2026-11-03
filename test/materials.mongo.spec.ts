@@ -3,6 +3,9 @@ import 'dotenv/config';
 import { Mongoose, Types } from 'mongoose';
 import { Readable } from 'node:stream';
 import { ConflictException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { ExtractedTextSchema, ExtractedTextChunkSchema } from '../src/model/extracted-text.schema.js';
+import { ExtractedTextService } from '../src/extraction/extracted-text.service.js';
+import { ExtractionJobSchema } from '../src/model/extraction-job.schema.js';
 import { MaterialSchema, StorageUsageSchema } from '../src/model/material.schema.js';
 import { CourseSchema } from '../src/model/course.schema.js';
 import { FolderSchema } from '../src/model/folder.schema.js';
@@ -17,21 +20,25 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
     const Folder = database.model('MaterialTestFolder', FolderSchema.clone(), `${prefix}_folders`);
     const Material = database.model('MaterialTestMaterial', MaterialSchema.clone(), `${prefix}_materials`);
     const Usage = database.model('MaterialTestUsage', StorageUsageSchema.clone(), `${prefix}_usage`);
+    const Job = database.model('MaterialTestJob', ExtractionJobSchema.clone(), `${prefix}_jobs`);
+    const Extraction = database.model('MaterialTestExtraction', ExtractedTextSchema.clone(), `${prefix}_extractions`);
+    const Chunk = database.model('MaterialTestChunk', ExtractedTextChunkSchema.clone(), `${prefix}_chunks`);
+    const extractedText = new ExtractedTextService(Extraction as any, Chunk as any, Material as any, Job as any);
     const folders = new FolderService(Course as any, Folder as any, Material as any);
     const courses = new CourseService(Course as any, folders);
     const blobs = new Map<string, Buffer>();
     const storage = { ensureReady: async () => {}, upload: async (key: string, buffer: Buffer) => { blobs.set(key, buffer); },
         download: async (key: string) => Readable.from(blobs.get(key)!), remove: vi.fn(async (key: string) => { blobs.delete(key); }) };
-    const materials = new MaterialService(Material as any, Usage as any, folders, storage as any);
+    const materials = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
     const owner = new Types.ObjectId(), other = new Types.ObjectId();
     const file = (text = 'notes') => ({ originalname: 'notes.txt', mimetype: 'text/plain', buffer: Buffer.from(text) } as Express.Multer.File);
     beforeAll(async () => {
         await database.connect(process.env.MONGO_URI ?? 'mongodb://localhost:27017/Stream', { serverSelectionTimeoutMS: 8000 });
-        await Promise.all([Course.init(), Folder.init(), Material.init(), Usage.init()]);
+        await Promise.all([Course.init(), Folder.init(), Material.init(), Usage.init(), Job.init(), Extraction.init(), Chunk.init()]);
     }, 20000);
     afterAll(async () => {
         delete process.env.MATERIAL_ACCOUNT_LIMIT_BYTES;
-        try { if (database.connection.readyState === 1) for (const model of [Course, Folder, Material, Usage]) {
+        try { if (database.connection.readyState === 1) for (const model of [Course, Folder, Material, Usage, Job, Extraction, Chunk]) {
             if (!model.collection.name.startsWith(prefix)) throw new Error('Invalid test collection');
             await model.collection.drop().catch((error) => { if (error.code !== 26) throw error; });
         } } finally { await database.disconnect(); }
@@ -42,6 +49,9 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
         const lecture = (await folders.list(owner, course)).folders[1];
         const folder = await folders.create(owner, course, { name: 'Week 1', parent: lecture.id });
         const material = await materials.upload(owner, course, folder.id, file());
+        expect(material.processingStatus).toBe('queued');
+        expect(await Job.findOne({ material: material.id })).toMatchObject({ state: 'queued', materialVersion: 1 });
+        expect((await Job.findOne({ material: material.id }))!.owner.toString()).toBe(owner.toString());
         expect(material.materialType).toBe('lecture'); expect(material.state).toBe('ready'); expect(material).not.toHaveProperty('storageKey');
         await expect(materials.content(other, course, material.id)).rejects.toBeInstanceOf(NotFoundException);
         await expect(folders.delete(owner, course, folder.id)).rejects.toBeInstanceOf(ConflictException);
@@ -51,6 +61,7 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
         const chunks: Buffer[] = []; for await (const chunk of stream) chunks.push(Buffer.from(chunk));
         expect(Buffer.concat(chunks).toString()).toBe('notes');
         await materials.delete(owner, course, material.id);
+        expect(await Job.countDocuments({ material: material.id })).toBe(0);
         expect((await Usage.findById(owner))!.bytes).toBe(0);
         await folders.delete(owner, course, folder.id); await courses.delete(owner, course);
     }, 30000);
@@ -84,7 +95,7 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
         const pending = await Material.findOne({ course }); expect(pending!.state).toBe('cleanup_pending');
         expect(blobs.has(pending!.storageKey)).toBe(true);
         await Material.updateOne({ _id: pending!._id }, { $set: { retryAt: new Date(0) } });
-        const restarted = new MaterialService(Material as any, Usage as any, folders, storage as any);
+        const restarted = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
         await restarted.recover();
         expect(await Material.exists({ _id: pending!._id })).toBeNull(); expect(blobs.has(pending!.storageKey)).toBe(false);
         expect((await Usage.findById(owner))!.bytes).toBe(0);
@@ -97,8 +108,42 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
         await expect(materials.delete(deletionOwner, course, material.id)).rejects.toBeInstanceOf(ServiceUnavailableException);
         await expect(materials.content(deletionOwner, course, material.id)).rejects.toBeInstanceOf(ConflictException);
         await Material.updateOne({ _id: material.id }, { $set: { retryAt: new Date(0) } });
-        const secondWorker = new MaterialService(Material as any, Usage as any, folders, storage as any);
+        const secondWorker = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
         await Promise.all([materials.recover(), secondWorker.recover()]);
         expect((await Usage.findById(deletionOwner))!.bytes).toBe(0); expect(await Material.exists({ _id: material.id })).toBeNull();
     }, 30000);
+    it('atomically rolls back material readiness when enqueue fails and recovers cleanup after restart', async () => {
+        const jobOwner = new Types.ObjectId();
+        const course = (await courses.create(jobOwner, { name: 'Enqueue rollback' })).id;
+        const enqueue = vi.spyOn(Job, 'findOneAndUpdate').mockImplementationOnce(() => { throw new Error('Simulated enqueue outage'); });
+        try { await expect(materials.upload(jobOwner, course, undefined, file())).rejects.toThrow('Simulated enqueue outage'); }
+        finally { enqueue.mockRestore(); }
+        const pending = await Material.findOne({ course });
+        expect(pending!.state).toBe('cleanup_pending');
+        expect(pending!.processingStatus).toBe('not_started');
+        expect(await Job.countDocuments({ course })).toBe(0);
+        await Material.updateOne({ _id: pending!._id }, { $set: { retryAt: new Date(0) } });
+        const restarted = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
+        await restarted.recover();
+        expect(await Material.countDocuments({ course })).toBe(0);
+        expect(await Job.countDocuments({ course })).toBe(0);
+        expect((await Usage.findById(jobOwner))!.bytes).toBe(0);
+    }, 30000);
+    it('catches up existing documents concurrently without duplicates, and coordinates deletion', async () => {
+        const jobOwner = new Types.ObjectId();
+        const course = (await courses.create(jobOwner, { name: 'Catch-up race' })).id;
+        const material = await materials.upload(jobOwner, course, undefined, file());
+        await Job.deleteMany({ material: material.id });
+        await Material.updateOne({ _id: material.id }, { $set: { processingStatus: 'not_started' } });
+        const second = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
+        await Promise.all([materials.catchUpExtractionJobs(), second.catchUpExtractionJobs()]);
+        expect(await Job.countDocuments({ material: material.id })).toBe(1);
+        expect((await Material.findById(material.id))!.processingStatus).toBe('queued');
+        await Job.deleteMany({ material: material.id });
+        await Material.updateOne({ _id: material.id }, { $set: { processingStatus: 'not_started' } });
+        await Promise.all([second.catchUpExtractionJobs(), materials.delete(jobOwner, course, material.id)]);
+        expect(await Job.countDocuments({ material: material.id })).toBe(0);
+        expect(await Material.findById(material.id)).toBeNull();
+    }, 30000);
+
 });

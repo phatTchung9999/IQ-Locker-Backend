@@ -1,3 +1,6 @@
+import { Notification, NotificationSchema } from './model/notification.schema.js';
+import { NotificationService } from './service/notification.service.js';
+import { NotificationController } from './controller/notification.controller.js';
 import "dotenv/config";
 import { Module, RequestMethod, MiddlewareConsumer } from '@nestjs/common';
 import { createObserveModule } from '@nestjs/observe';
@@ -25,9 +28,15 @@ import { FolderController } from './controller/folder.controller.js';
 import { FolderService } from './service/folder.service.js';
 import { Folder, FolderSchema } from './model/folder.schema.js';
 import { Material, MaterialSchema, StorageUsage, StorageUsageSchema } from './model/material.schema.js';
+import { ExtractionJob, ExtractionJobSchema } from './model/extraction-job.schema.js';
 import { MaterialController } from './controller/material.controller.js';
 import { MaterialService } from './service/material.service.js';
 import { BlobStorageService } from './storage/blob-storage.service.js';
+import { ExtractionWorkerService } from './extraction/extraction-worker.service.js';
+import { ExtractedText, ExtractedTextSchema, ExtractedTextChunk, ExtractedTextChunkSchema } from './model/extracted-text.schema.js';
+import { ExtractedTextService } from './extraction/extracted-text.service.js';
+import { EXTRACTION_RESULT_WRITER } from './extraction/extraction.types.js';
+import { ExtractionParserService } from './extraction/extraction-parser.service.js';
 import { isAuthenticated } from './app.middleware.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
@@ -37,8 +46,8 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     // Distributed tracing, auto-correlated logs, request/job metrics, error
     // telemetry, alarms, and more — out of the box. Sign up at https://observe.nestjs.com
     MongooseModule.forRoot(process.env.MONGO_URI ?? 'mongodb://localhost:27017/Stream',),
-    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
-    MongooseModule.forFeature([{ name: Video.name, schema: VideoSchema }, { name: Course.name, schema: CourseSchema }, { name: Folder.name, schema: FolderSchema }, { name: Material.name, schema: MaterialSchema }, { name: StorageUsage.name, schema: StorageUsageSchema }]),
+    MongooseModule.forFeature([{ name: Notification.name, schema: NotificationSchema }, { name: User.name, schema: UserSchema }]),
+    MongooseModule.forFeature([{ name: Video.name, schema: VideoSchema }, { name: Course.name, schema: CourseSchema }, { name: Folder.name, schema: FolderSchema }, { name: Material.name, schema: MaterialSchema }, { name: StorageUsage.name, schema: StorageUsageSchema }, { name: ExtractionJob.name, schema: ExtractionJobSchema }, { name: ExtractedText.name, schema: ExtractedTextSchema }, { name: ExtractedTextChunk.name, schema: ExtractedTextChunkSchema }]),
     MulterModule.register({
       storage: diskStorage({
         destination: './public',
@@ -62,8 +71,8 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     }),
 
   ],
-  controllers: [AppController, VideoController, UserController, CourseController, FolderController, MaterialController],
-  providers: [AppService, VideoService, UserService, CourseService, FolderService, MaterialService, BlobStorageService],
+  controllers: [NotificationController, AppController, VideoController, UserController, CourseController, FolderController, MaterialController],
+  providers: [NotificationService, AppService, VideoService, UserService, CourseService, FolderService, MaterialService, BlobStorageService, ExtractionParserService, ExtractionWorkerService, ExtractedTextService, { provide: EXTRACTION_RESULT_WRITER, useExisting: ExtractedTextService }],
 })
 export class AppModule {
     configure(consumer: MiddlewareConsumer) {
@@ -77,6 +86,7 @@ export class AppModule {
         CourseController,
         FolderController,
         MaterialController,
+        NotificationController,
         { path: 'api/v1/user/me', method: RequestMethod.GET },
         { path: 'api/v1/user/me', method: RequestMethod.PATCH },
       );

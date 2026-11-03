@@ -41,10 +41,10 @@ export class BlobStorageService {
             });
         } catch { throw this.unavailable(); }
     }
-    async download(key: string): Promise<Readable> {
+    async download(key: string, signal?: AbortSignal): Promise<Readable> {
         await this.ensureReady();
         try {
-            const response = await this.getContainer().getBlobClient(key).download(0, undefined, { abortSignal: AbortSignal.timeout(120000) });
+            const response = await this.getContainer().getBlobClient(key).download(0, undefined, { abortSignal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000) });
             if (!response.readableStreamBody) throw this.unavailable();
             return response.readableStreamBody as Readable;
         } catch { throw this.unavailable(); }

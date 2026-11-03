@@ -1,6 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Schema as MongooseSchema, Types } from 'mongoose';
 import type { HydratedDocument } from 'mongoose';
+import { EXTRACTION_JOB_STATES, EXTRACTION_ERROR_CODES } from './extraction-job.schema.js';
 export type MaterialDocument = HydratedDocument<Material>;
 @Schema({ timestamps: true })
 export class Material {
@@ -14,7 +15,9 @@ export class Material {
     @Prop({ required: true, immutable: true }) storageKey: string;
     @Prop({ enum: ['', 'syllabus', 'lecture', 'quiz', 'exam', 'other'], default: '', immutable: true }) materialType: string;
     @Prop({ default: 1, immutable: true }) version: number;
-    @Prop({ default: 'not_started', enum: ['not_started'] }) processingStatus: string;
+    @Prop({ default: 'not_started', enum: ['not_started', ...EXTRACTION_JOB_STATES] }) processingStatus: string;
+    @Prop({ type: Date, default: null }) processedAt: Date | null;
+    @Prop({ type: String, enum: EXTRACTION_ERROR_CODES, default: null }) processingErrorCode: string | null;
     @Prop({ required: true, enum: ['uploading', 'ready', 'deleting', 'cleanup_pending'] }) state: string;
     @Prop({ type: Date, default: null }) retryAt: Date | null;
     @Prop({ type: Date, default: null }) cleanupLeaseUntil: Date | null;
@@ -26,6 +29,7 @@ export const MaterialSchema = SchemaFactory.createForClass(Material);
 MaterialSchema.index({ owner: 1, course: 1, folder: 1, createdAt: -1 });
 MaterialSchema.index({ state: 1, retryAt: 1 });
 MaterialSchema.index({ storageKey: 1 }, { unique: true });
+MaterialSchema.index({ state: 1, processingStatus: 1, createdAt: 1, _id: 1 });
 
 @Schema()
 export class StorageUsage {

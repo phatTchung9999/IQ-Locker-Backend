@@ -2,7 +2,8 @@
 
 The backend stores document metadata in MongoDB and original files in a private
 Azure Blob container. PDFs are rendered client-side with locally hosted PDF.js
-assets; TXT content is rendered as text. No extraction/AI analysis runs yet.
+assets; TXT content is rendered as text. Optional backend text extraction is
+implemented through Phase 1.5 Step 4; AI analysis is not implemented.
 
 ## Azure configuration
 
@@ -52,9 +53,9 @@ reads and deletes a uniquely named disposable blob under `phase14-check/`.
 It does not touch existing material records or student files. Package `scripts/`
 alongside `dist/` and the production dependencies to use this command.
 
-Cloud-managed-identity access cannot be inferred from local mocks. The local
-workspace did not have storage configuration/developer credentials during
-implementation; this deployment check remains necessary.
+Cloud-managed-identity access cannot be inferred from local tests. A local Azure
+storage round trip passed on October 30; deployed identity/browser verification
+remains a separate acceptance check.
 
 For local development, use an Azure developer login with container data access,
 or set `NODE_ENV=development` and `AZURE_STORAGE_CONNECTION_STRING` to a local
@@ -77,8 +78,8 @@ Files must be nonempty PDF or valid UTF-8 TXT. Extension and declared MIME are
 checked against actual content. Encrypted, malformed, empty, and >1,000-page PDFs
 are rejected. Binary/invalid-UTF-8 text is rejected; markup in TXT remains inert.
 The initial classification is inherited from the nearest classified ancestor,
-otherwise blank. Version 1 and processingStatus `not_started` are reserved for
-future extraction. Original bytes/filename remain unchanged when titles change.
+otherwise blank. New materials use version 1 and transition from `not_started`
+to `queued` when file finalization and extraction-job creation commit together. Original bytes/filename remain unchanged when titles change.
 
 ## Consistency, quota and recovery
 
@@ -126,3 +127,151 @@ and transfer options. They do not replace the cloud round-trip command above.
 
 No OCR, full-content search, replacement/version UI, AI classification or generated
 quizzes/reminders is implemented in this phase.
+
+## Phase 1.5: reliable extraction jobs
+
+Successful uploads now finalize the ready material, its owned material/version
+extraction job, and queued processing status in one MongoDB transaction. An
+enqueue failure rolls back readiness and follows the existing upload cleanup
+path. The existing recovery timer catches up at most ten ready/not_started
+PDF/TXT materials each minute and at startup, with ownership and state rechecked
+inside a course transaction. Material deletion removes jobs transactionally with
+metadata/quota cleanup. Existing private file access is unchanged.
+
+The backend worker and private text writer are implemented, but processing is
+disabled by default. Jobs remain queued unless explicitly enabled. OCR and AI
+analysis are not implemented. Processing status/retry UI is implemented in Step 5. No extra Azure service
+is required for this initial MongoDB-backed queue.
+
+## Phase 1.5: optional background extraction
+
+The backend now includes a MongoDB-leased dispatcher and a Node worker-thread
+PDF/TXT parser, with PDF.js pinned as a production dependency. Keep:
+
+```env
+EXTRACTION_PROCESSING_ENABLED=false
+EXTRACTION_MAX_INPUT_BYTES=20000000
+EXTRACTION_MAX_TEXT_CHARS=2000000
+EXTRACTION_TIMEOUT_MS=60000
+```
+
+Step 4 supplies the transactional source-text writer. The default false setting
+keeps processing off. After validating configuration and deployment, explicitly
+set `EXTRACTION_PROCESSING_ENABLED=true` and restart to process queued documents,
+including existing catch-up jobs. No real student processing was enabled during
+implementation. Start with disposable documents in a test environment.
+
+The enabled worker polls every five seconds, handles one task per backend
+instance, uses 180-second claims with 30-second renewal, and recovers at most ten
+expired claims per pass. Storage/timeouts have bounded retries; image-only/empty
+text and parser/output-limit failures are reported separately. Original file
+access and upload cleanup remain independent of extraction success.
+
+PDF/TXT parsing is in a separate thread with heap/time/output limits; threads are
+not an OS security sandbox and do not impose a complete native-memory ceiling.
+PDF text retains page references; TXT preserves its text for later line/character
+chunking. OCR is not supported. Parser diagnostics/document text are not logged.
+
+Use `npm run build` so Nest copies `src/extraction/parser-worker.mjs` into
+`dist/extraction/`. Deploy that file and production dependencies along with the
+compiled backend. `npx vitest run src/extraction` runs parser/gating/watchdog tests;
+`IQLOCKER_MONGO_TEST=1 npm test` includes disposable MongoDB lease/recovery tests.
+
+## Private source-linked text (Phase 1.5 Step 4)
+
+`extractedtexts` stores extraction manifests and `extractedtextchunks` stores text
+in chunks of at most 4,000 UTF-16 code units, bounded by 2,000 chunks and the
+configured total text limit. Each includes owner/course/material/version and
+extractor version. Unique indexes protect each material/version snapshot and
+snapshot/chunk index. These are internal collections, not public static assets.
+
+PDF chunks refer to a 1-based page and exclusive-end character offsets within
+that page's extracted text. TXT chunks use offsets within the decoded file and
+1-based inclusive start/end line numbers. CRLF counts as one line ending. Unicode
+surrogate pairs and CRLF pairs are not split across chunk boundaries. PDF reading
+order is parser-derived; exact visual layout/table semantics are not guaranteed.
+
+The writer revalidates material ownership/version/state and a live lease inside
+the worker's course transaction. Manifest/chunks, ready job status and ready
+material processing status commit together. Partial writes roll back. Retried
+writes replace the same version atomically; original file bytes remain unchanged.
+Deletion removes all versions of derived text with jobs/metadata/quota cleanup.
+Pending deletion immediately blocks new extracted-text reads. Parsed text is
+untrusted data; it must never be treated as instructions or authorization.
+
+Authenticated API:
+
+```text
+GET /api/v1/courses/:courseId/materials/:materialId/extraction
+GET /api/v1/courses/:courseId/materials/:materialId/extraction?offset=20&extractionId=SNAPSHOT_ID
+```
+
+The first response includes snapshot/material/version IDs, extractor version,
+chunk count, text length, page count, extraction timestamp, up to 20 chunks and
+`nextOffset`. Follow-up requests must include the returned `extractionId`; if it
+changes, restart from the first chunk. Source text is JSON with private/no-store
+headers. Queries always include the authenticated owner/course/current version.
+No storage keys, lease tokens, raw parser errors or owner records are returned.
+Returns 401 without authentication, 404 for foreign/missing references, 409 if
+not ready or the snapshot changed, and 400 for invalid IDs/offsets.
+
+### Future analysis retrieval contract
+
+- Selected folder: direct documents by default; descendant inclusion must be an
+  explicit option. Folder IDs must belong to the authenticated owner/course.
+- Selected course: include root documents and all descendant folders.
+- Select only available originals with ready extraction; preserve material IDs,
+  versions, extraction snapshot IDs, extractor versions and chunk references in
+  each analysis request so citations are reproducible. Do not silently analyze
+  missing/failed documents as if the selection were complete.
+- Folder material type is context independent of the display name. Document text
+  cannot broaden this scope. No folder/course analysis or search API exists yet.
+
+Validation uses isolated MongoDB collections, fake blob storage and real parsers
+for TXT/PDF round trips, privacy, bounded pagination, source fidelity, rollback,
+idempotence and stale/deleted results. Live Azure and deployed worker checks remain
+separate from these tests. Processing-status/retry controls are implemented in Step 5, described below.
+
+## Processing status and retries (Phase 1.5 Step 5)
+
+Owned list/read responses include `processingStatus`, safe `processingErrorCode`,
+`processedAt`, `processingAttempts`, `processingMaxAttempts` and
+`canRetryExtraction`. List responses additionally include `processingEnabled` so
+clients do not poll a paused worker. Job details are fetched in one scoped batch
+for the folder list; blob keys, lease tokens and provider exceptions stay private.
+
+```text
+POST /api/v1/courses/:courseId/materials/:materialId/extraction/retry
+Authorization: Bearer TOKEN
+```
+
+No request body is needed. Returns 200 with safe updated material metadata and
+private/no-store headers; 401 for missing authentication, 404 for foreign/missing
+references, 400 for invalid IDs and 409 when retry is not eligible. Owner is
+always derived from authentication. The material must be available and both its
+processing status and current-version job must be failed.
+
+Eligible error codes are parser_failed, timeout and storage_unavailable, with
+attempts remaining. No-readable-text, output-limit and attempts-exhausted jobs
+cannot be manually retried in this slice. The lifetime attempt budget (default
+3) includes automatic and manual attempts: retry requeues the same job and clears
+its failure/lease/timestamps, but never resets attempts or increases maxAttempts.
+The worker increments attempts when claiming work. Concurrent repeated retry
+requests can queue once; later requests conflict rather than create duplicate
+jobs. Material and job status changes share the course transaction.
+
+The document UI displays Awaiting extraction, Queued, Extracting, Text ready or
+Failed with safe explanations. It offers a retry button only when the server
+allows it. Original previews/downloads remain available during extraction or
+after extraction failure. Scanned documents explicitly explain the OCR limitation.
+
+Active processing refreshes every five seconds without hiding document rows.
+Polling stops on completion, disabled processing, navigation/unmount, authorization
+failure or refresh errors; hidden tabs pause and resume on visibility. A refresh
+error preserves the document list and offers an explicit Refresh action. Queued
+work with processing disabled shows a paused message instead of endless polling.
+The UI does not yet display extracted-text chunks or provide an Analyze action.
+
+Default processing remains false; implementation/testing did not enable student
+processing or change Azure settings. Final desktop/mobile browser review and live
+Azure/deployed workflow verification remain Step 6.

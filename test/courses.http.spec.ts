@@ -12,6 +12,8 @@ import { MaterialController } from '../src/controller/material.controller.js';
 import { MaterialService } from '../src/service/material.service.js';
 import { BlobStorageService } from '../src/storage/blob-storage.service.js';
 import { Readable } from 'node:stream';
+import { ExtractedTextService } from '../src/extraction/extracted-text.service.js';
+import { ExtractionJob } from '../src/model/extraction-job.schema.js';
 import { Material, StorageUsage } from '../src/model/material.schema.js';
 import { Folder } from '../src/model/folder.schema.js';
 import { CourseController } from '../src/controller/course.controller.js';
@@ -22,6 +24,7 @@ import { isAuthenticated } from '../src/app.middleware.js';
 import { courseModelFixture } from './fixtures/course-model.js';
 
 const fixture = courseModelFixture();
+const extractedText = new ExtractedTextService(fixture.ExtractionModel as any, fixture.ChunkModel as any, fixture.MaterialModel as any, fixture.JobModel as any);
 const blobs = new Map<string, Buffer>();
 const storage = { ensureReady: async () => {}, upload: async (key: string, buffer: Buffer) => { blobs.set(key, buffer); },
   remove: async (key: string) => { blobs.delete(key); }, download: async (key: string) => Readable.from(blobs.get(key)!) };
@@ -33,7 +36,7 @@ const users = [
 const token = (index: number) => `Bearer ${jwt.sign({ email: users[index].email })}`;
 @Module({
   controllers: [CourseController, FolderController, MaterialController],
-  providers: [CourseService, FolderService, MaterialService, { provide: BlobStorageService, useValue: storage }, { provide: getModelToken(StorageUsage.name), useValue: fixture.UsageModel }, { provide: getModelToken(Material.name), useValue: fixture.MaterialModel }, { provide: getModelToken(Folder.name), useValue: fixture.FolderModel }, { provide: getModelToken(Course.name), useValue: fixture.CourseModel },
+  providers: [CourseService, FolderService, MaterialService, { provide: ExtractedTextService, useValue: extractedText }, { provide: getModelToken(ExtractionJob.name), useValue: fixture.JobModel }, { provide: BlobStorageService, useValue: storage }, { provide: getModelToken(StorageUsage.name), useValue: fixture.UsageModel }, { provide: getModelToken(Material.name), useValue: fixture.MaterialModel }, { provide: getModelToken(Folder.name), useValue: fixture.FolderModel }, { provide: getModelToken(Course.name), useValue: fixture.CourseModel },
     { provide: JwtService, useValue: jwt }, { provide: UserService, useValue: { getOne: async (email: string) => users.find((user) => user.email === email) ?? null } }],
 })
 class CourseTestModule {
@@ -46,7 +49,7 @@ beforeAll(async () => {
   await app.listen(0, '127.0.0.1');
 });
 afterAll(async () => { await app?.close(); });
-beforeEach(() => { fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); blobs.clear(); });
+beforeEach(() => { fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); fixture.jobs.clear(); fixture.extractions.clear(); fixture.chunks.clear(); blobs.clear(); });
 
 it.each(['get', 'post', 'patch', 'delete'] as const)('rejects missing and invalid credentials on %s', async (method) => {
   const url = method === 'patch' || method === 'delete' ? `/api/v1/courses/${new Types.ObjectId()}` : '/api/v1/courses';
@@ -147,4 +150,49 @@ it('rejects invalid multipart files and oversized uploads without storing files'
   await request(app.getHttpServer()).post(path).set('Authorization', token(0)).attach('file', Buffer.alloc(20_000_001, 65), 'large.txt').expect(413);
   await request(app.getHttpServer()).post(path).set('Authorization', token(0)).attach('file', Buffer.from('a'), 'a.txt').attach('file', Buffer.from('b'), 'b.txt').expect(400);
   expect(blobs.size).toBe(0); expect(fixture.materials.size).toBe(0);
+});
+
+it('keeps extracted text private, bounded and unavailable before processing completes', async () => {
+  const course = await request(app.getHttpServer()).post('/api/v1/courses').set('Authorization', token(0)).send({ name: 'Source API' }).expect(201);
+  const upload = await request(app.getHttpServer()).post(`/api/v1/courses/${course.body.id}/materials`).set('Authorization', token(0)).attach('file', Buffer.from('notes'), { filename: 'notes.txt', contentType: 'text/plain' }).expect(201);
+  const id = upload.body.id;
+  const path = `/api/v1/courses/${course.body.id}/materials/${id}/extraction`;
+  await request(app.getHttpServer()).get(path).expect(401);
+  await request(app.getHttpServer()).get(path).set('Authorization', token(1)).expect(404);
+  await request(app.getHttpServer()).get(path).set('Authorization', token(0)).expect(409);
+  const material = fixture.materials.get(id);
+  material.processingStatus = 'ready';
+  const scope = { owner: users[0]._id, course: material.course, material: material._id, materialVersion: 1, extractorVersion: 1 };
+  const [snapshot] = await fixture.ExtractionModel.create([{ ...scope, chunkCount: 1, textChars: 21, pageCount: 1, mediaType: 'text/plain' }]);
+  await fixture.ChunkModel.create([{ ...scope, extraction: snapshot._id, index: 0, text: '<script>data</script>', page: null, charStart: 0, charEnd: 21, lineStart: 1, lineEnd: 1 }]);
+  const response = await request(app.getHttpServer()).get(path).set('Authorization', token(0)).expect(200);
+  expect(response.headers['cache-control']).toBe('private, no-store');
+  expect(response.headers['content-type']).toMatch(/application\/json/);
+  expect(response.body.chunks[0].text).toBe('<script>data</script>');
+  expect(response.body).not.toHaveProperty('owner'); expect(response.body).not.toHaveProperty('leaseToken');
+  expect(response.body).not.toHaveProperty('storageKey');
+  await request(app.getHttpServer()).get(`${path}?offset=-1`).set('Authorization', token(0)).expect(400);
+  await request(app.getHttpServer()).delete(`/api/v1/courses/${course.body.id}/materials/${id}`).set('Authorization', token(0)).expect(204);
+  expect(fixture.extractions.size).toBe(0); expect(fixture.chunks.size).toBe(0);
+  await request(app.getHttpServer()).get(path).set('Authorization', token(0)).expect(404);
+});
+
+it('authenticates and scopes extraction retries, keeps the same attempt budget and redacts private fields', async () => {
+  const course = await request(app.getHttpServer()).post('/api/v1/courses').set('Authorization', token(0)).send({ name: 'Retry API' }).expect(201);
+  const upload = await request(app.getHttpServer()).post(`/api/v1/courses/${course.body.id}/materials`).set('Authorization', token(0)).attach('file', Buffer.from('notes'), { filename: 'notes.txt', contentType: 'text/plain' }).expect(201);
+  const id = upload.body.id, path = `/api/v1/courses/${course.body.id}/materials/${id}/extraction/retry`;
+  const material = fixture.materials.get(id), job = [...fixture.jobs.values()][0];
+  material.processingStatus = 'failed'; material.processingErrorCode = 'parser_failed';
+  Object.assign(job, { state: 'failed', errorCode: 'parser_failed', attempts: 1, maxAttempts: 3, leaseToken: 'private-token' });
+  await request(app.getHttpServer()).post(path).expect(401);
+  await request(app.getHttpServer()).post(path).set('Authorization', token(1)).expect(404);
+  const list = await request(app.getHttpServer()).get(`/api/v1/courses/${course.body.id}/materials`).set('Authorization', token(0)).expect(200);
+  expect(list.body.materials[0]).toMatchObject({ canRetryExtraction: true, processingAttempts: 1 });
+  expect(typeof list.body.processingEnabled).toBe('boolean');
+  const response = await request(app.getHttpServer()).post(path).set('Authorization', token(0)).send({ owner: users[1]._id }).expect(200);
+  expect(response.body).toMatchObject({ processingStatus: 'queued', canRetryExtraction: false, processingAttempts: 1 });
+  expect(response.headers['cache-control']).toBe('private, no-store');
+  expect(response.body).not.toHaveProperty('owner'); expect(response.body).not.toHaveProperty('leaseToken'); expect(response.body).not.toHaveProperty('storageKey');
+  await request(app.getHttpServer()).post(path).set('Authorization', token(0)).expect(409);
+  expect(fixture.jobs.size).toBe(1);
 });

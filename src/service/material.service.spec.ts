@@ -4,6 +4,7 @@ import { Types } from 'mongoose';
 import { PDFDocument } from 'pdf-lib';
 import { Readable } from 'node:stream';
 import { courseModelFixture } from '../../test/fixtures/course-model.js';
+import { ExtractedTextService } from '../extraction/extracted-text.service.js';
 import { MaterialService } from './material.service.js';
 import { FolderService } from './folder.service.js';
 import { CourseService } from './course.service.js';
@@ -14,13 +15,14 @@ const courses = new CourseService(fixture.CourseModel as any, folders);
 const blobs = new Map<string, Buffer>();
 const storage = { ensureReady: vi.fn(async () => undefined), upload: vi.fn(async (key: string, buffer: Buffer) => { blobs.set(key, buffer); }),
     remove: vi.fn(async (key: string) => { blobs.delete(key); }), download: vi.fn(async (key: string) => Readable.from(blobs.get(key)!)) };
-const service = new MaterialService(fixture.MaterialModel as any, fixture.UsageModel as any, folders, storage as any);
+const extractedText = new ExtractedTextService(fixture.ExtractionModel as any, fixture.ChunkModel as any, fixture.MaterialModel as any, fixture.JobModel as any);
+const service = new MaterialService(fixture.MaterialModel as any, fixture.UsageModel as any, folders, storage as any, fixture.JobModel as any, extractedText);
 export const uploadFile = (text: Buffer | string = 'lecture notes', name = 'notes.txt', mimetype = 'text/plain') => ({ buffer: typeof text === 'string' ? Buffer.from(text) : text, originalname: name, mimetype } as Express.Multer.File);
 const owner = new Types.ObjectId(), other = new Types.ObjectId();
 let course: string;
 beforeEach(async () => {
     vi.clearAllMocks(); delete process.env.MATERIAL_ACCOUNT_LIMIT_BYTES;
-    fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); blobs.clear();
+    fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); fixture.jobs.clear(); fixture.extractions.clear(); fixture.chunks.clear(); blobs.clear();
     course = (await courses.create(owner, { name: 'Biology' })).id;
 });
 afterEach(() => { delete process.env.MATERIAL_ACCOUNT_LIMIT_BYTES; });
@@ -28,7 +30,11 @@ it('uploads privately, inherits nearest classified ancestor, projects safe metad
     const lecture = (await folders.list(owner, course)).folders[1];
     const week = await folders.create(owner, course, { name: 'Week 1', parent: lecture.id });
     const document = await service.upload(owner, course, week.id, uploadFile());
-    expect(document).toMatchObject({ title: 'notes', state: 'ready', materialType: 'lecture', version: 1, processingStatus: 'not_started' });
+    expect(document).toMatchObject({ title: 'notes', state: 'ready', materialType: 'lecture', version: 1, processingStatus: 'queued' });
+    const job = [...fixture.jobs.values()][0];
+    expect(job.owner.toString()).toBe(owner.toString());
+    expect(job.material.toString()).toBe(document.id);
+    expect(job.materialVersion).toBe(1); expect(job.state).toBe('queued');
     expect(document).not.toHaveProperty('storageKey'); expect(document).not.toHaveProperty('owner');
     expect((await service.list(owner, course, week.id)).materials).toHaveLength(1);
     expect((await service.list(owner, course)).materials).toHaveLength(0);
@@ -40,7 +46,7 @@ it('uploads privately, inherits nearest classified ancestor, projects safe metad
     await expect(folders.delete(owner, course, week.id)).rejects.toBeInstanceOf(ConflictException);
     await expect(courses.delete(owner, course)).rejects.toBeInstanceOf(ConflictException);
     await service.delete(owner, course, document.id);
-    expect(blobs.size).toBe(0); expect(fixture.materials.size).toBe(0); expect(fixture.usage.get(owner.toString()).bytes).toBe(0);
+    expect(blobs.size).toBe(0); expect(fixture.materials.size).toBe(0); expect(fixture.jobs.size).toBe(0); expect(fixture.usage.get(owner.toString()).bytes).toBe(0);
     await folders.delete(owner, course, week.id);
     await courses.delete(owner, course);
 });
@@ -85,9 +91,9 @@ it('persists an ambiguous failed upload and recovers after restart without leaki
     expect(reserved.state).toBe('cleanup_pending'); expect(fixture.usage.get(owner.toString()).bytes).toBeGreaterThan(0);
     await expect(courses.delete(owner, course)).rejects.toBeInstanceOf(ConflictException);
     fixture.materials.get(reserved._id.toString()).retryAt = new Date(0);
-    const restarted = new MaterialService(fixture.MaterialModel as any, fixture.UsageModel as any, folders, storage as any);
+    const restarted = new MaterialService(fixture.MaterialModel as any, fixture.UsageModel as any, folders, storage as any, fixture.JobModel as any, extractedText);
     await restarted.recover();
-    expect(blobs.size).toBe(0); expect(fixture.materials.size).toBe(0); expect(fixture.usage.get(owner.toString()).bytes).toBe(0);
+    expect(blobs.size).toBe(0); expect(fixture.materials.size).toBe(0); expect(fixture.jobs.size).toBe(0); expect(fixture.usage.get(owner.toString()).bytes).toBe(0);
 });
 it('retries a failed deletion, disables content immediately, and releases quota exactly once', async () => {
     const document = await service.upload(owner, course, undefined, uploadFile());
@@ -111,4 +117,70 @@ it('does not expose pending uploads and recovers expired reservations', async ()
     fixture.materials.get(pending._id.toString()).retryAt = new Date(0); await service.recover(); finish();
     await expect(task).rejects.toBeInstanceOf(ConflictException);
     expect(fixture.materials.size).toBe(0);
+});
+
+it('rolls back ready status if job creation fails, then cleans up the blob and quota', async () => {
+    const enqueue = vi.spyOn(fixture.JobModel, 'findOneAndUpdate').mockImplementationOnce(() => { throw new Error('Job database unavailable'); });
+    try { await expect(service.upload(owner, course, undefined, uploadFile())).rejects.toThrow('Job database unavailable'); }
+    finally { enqueue.mockRestore(); }
+    const pending = [...fixture.materials.values()][0];
+    expect(pending.state).toBe('cleanup_pending');
+    expect(pending.processingStatus).toBe('not_started');
+    expect(fixture.jobs.size).toBe(0);
+    expect(blobs.size).toBe(1);
+    pending.retryAt = new Date(0);
+    await service.recover();
+    expect(fixture.jobs.size).toBe(0); expect(fixture.materials.size).toBe(0); expect(blobs.size).toBe(0);
+    expect(fixture.usage.get(owner.toString()).bytes).toBe(0);
+});
+it('bounds catch-up to ten ready materials per pass and is safe across repeated passes', async () => {
+    for (let n = 0; n < 12; n++) {
+        const material = await service.upload(owner, course, undefined, uploadFile());
+        fixture.materials.get(material.id).processingStatus = 'not_started';
+    }
+    fixture.jobs.clear();
+    await service.catchUpExtractionJobs();
+    expect(fixture.jobs.size).toBe(10);
+    await Promise.all([service.catchUpExtractionJobs(), service.catchUpExtractionJobs()]);
+    expect(fixture.jobs.size).toBe(12);
+    expect([...fixture.materials.values()].every((material) => material.processingStatus === 'queued')).toBe(true);
+    await service.catchUpExtractionJobs();
+    expect(fixture.jobs.size).toBe(12);
+});
+it('does not enqueue pending uploads or documents scheduled for cleanup', async () => {
+    const material = await service.upload(owner, course, undefined, uploadFile());
+    fixture.jobs.clear();
+    const record = fixture.materials.get(material.id);
+    record.processingStatus = 'not_started';
+    for (const state of ['uploading', 'deleting', 'cleanup_pending']) {
+        record.state = state; await service.catchUpExtractionJobs(); expect(fixture.jobs.size).toBe(0);
+    }
+});
+
+it('retries an eligible failed extraction on the same job without resetting attempts or quota', async () => {
+    const material = await service.upload(owner, course, undefined, uploadFile());
+    const record = fixture.materials.get(material.id), job = [...fixture.jobs.values()][0];
+    record.processingStatus = 'failed'; record.processingErrorCode = 'parser_failed';
+    Object.assign(job, { state: 'failed', errorCode: 'parser_failed', attempts: 1, maxAttempts: 3 });
+    const jobId = job._id.toString(), bytes = fixture.usage.get(owner.toString()).bytes;
+    expect(await service.read(owner, course, material.id)).toMatchObject({ canRetryExtraction: true, processingAttempts: 1, processingMaxAttempts: 3, processingErrorCode: 'parser_failed' });
+    const retries = await Promise.allSettled([service.retryExtraction(owner, course, material.id), service.retryExtraction(owner, course, material.id)]);
+    expect(retries.filter(value => value.status === 'fulfilled')).toHaveLength(1);
+    expect(job._id.toString()).toBe(jobId); expect(job.attempts).toBe(1); expect(job.state).toBe('queued');
+    expect(fixture.jobs.size).toBe(1); expect(fixture.usage.get(owner.toString()).bytes).toBe(bytes);
+    expect(storage.upload).toHaveBeenCalledTimes(1);
+});
+it('refuses foreign, active, exhausted and non-retryable extraction requests', async () => {
+    const material = await service.upload(owner, course, undefined, uploadFile());
+    await expect(service.retryExtraction(other, course, material.id)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.retryExtraction(owner, course, material.id)).rejects.toBeInstanceOf(ConflictException);
+    const record = fixture.materials.get(material.id), job = [...fixture.jobs.values()][0];
+    record.processingStatus = 'failed';
+    for (const errorCode of ['no_readable_text', 'output_limit', 'attempts_exhausted']) {
+        Object.assign(job, { state: 'failed', errorCode, attempts: 1, maxAttempts: 3 });
+        await expect(service.retryExtraction(owner, course, material.id)).rejects.toBeInstanceOf(ConflictException);
+    }
+    Object.assign(job, { state: 'failed', errorCode: 'timeout', attempts: 3, maxAttempts: 3 });
+    expect((await service.read(owner, course, material.id)).canRetryExtraction).toBe(false);
+    await expect(service.retryExtraction(owner, course, material.id)).rejects.toBeInstanceOf(ConflictException);
 });
