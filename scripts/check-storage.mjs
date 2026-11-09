@@ -3,12 +3,14 @@ import { BlobServiceClient } from '@azure/storage-blob';
 import { DefaultAzureCredential } from '@azure/identity';
 import { randomUUID } from 'node:crypto';
 const url = process.env.AZURE_STORAGE_ACCOUNT_URL;
-const name = process.env.AZURE_STORAGE_CONTAINER;
-if (!url || !name) throw new Error('Set AZURE_STORAGE_ACCOUNT_URL and AZURE_STORAGE_CONTAINER first.');
+const kind = process.argv.includes('--avatars') ? 'avatars' : 'materials';
+const variable = kind === 'avatars' ? 'AZURE_STORAGE_AVATARS_CONTAINER' : 'AZURE_STORAGE_MATERIALS_CONTAINER';
+const name = process.env[variable] ?? (kind === 'materials' ? process.env.AZURE_STORAGE_CONTAINER : undefined);
+if (!url || !name) throw new Error(`Set AZURE_STORAGE_ACCOUNT_URL and ${variable} first.`);
 const container = new BlobServiceClient(url, new DefaultAzureCredential()).getContainerClient(name);
 const properties = await container.getProperties();
-if (properties.blobPublicAccess) throw new Error('The materials container must be private.');
-console.log('Private container access verified.');
+if (properties.blobPublicAccess) throw new Error(`The ${kind} container must be private.`);
+console.log(`Private ${kind} container access verified.`);
 if (process.argv.includes('--roundtrip')) {
     const blob = container.getBlockBlobClient(`phase14-check/${randomUUID()}.txt`);
     try {

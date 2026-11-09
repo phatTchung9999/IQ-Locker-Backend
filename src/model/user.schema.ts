@@ -16,7 +16,7 @@ export class User {
     school?: string;
     @Prop({ trim: true, maxlength: 150 })
     major?: string;
-    // Reserved for the future avatar upload/storage workflow, not client-editable.
+    // Current private avatar reference; only AvatarService may update it.
     @Prop({ trim: true, maxlength: 1024 })
     avatarKey?: string;
     @Prop({default: Date.now })

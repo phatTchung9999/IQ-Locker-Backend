@@ -1,3 +1,6 @@
+import { Avatar, AvatarSchema } from './model/avatar.schema.js';
+import { AvatarService } from './service/avatar.service.js';
+import { AvatarController } from './controller/avatar.controller.js';
 import { Notification, NotificationSchema } from './model/notification.schema.js';
 import { NotificationService } from './service/notification.service.js';
 import { NotificationController } from './controller/notification.controller.js';
@@ -46,7 +49,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     // Distributed tracing, auto-correlated logs, request/job metrics, error
     // telemetry, alarms, and more — out of the box. Sign up at https://observe.nestjs.com
     MongooseModule.forRoot(process.env.MONGO_URI ?? 'mongodb://localhost:27017/Stream',),
-    MongooseModule.forFeature([{ name: Notification.name, schema: NotificationSchema }, { name: User.name, schema: UserSchema }]),
+    MongooseModule.forFeature([{ name: Avatar.name, schema: AvatarSchema }, { name: Notification.name, schema: NotificationSchema }, { name: User.name, schema: UserSchema }]),
     MongooseModule.forFeature([{ name: Video.name, schema: VideoSchema }, { name: Course.name, schema: CourseSchema }, { name: Folder.name, schema: FolderSchema }, { name: Material.name, schema: MaterialSchema }, { name: StorageUsage.name, schema: StorageUsageSchema }, { name: ExtractionJob.name, schema: ExtractionJobSchema }, { name: ExtractedText.name, schema: ExtractedTextSchema }, { name: ExtractedTextChunk.name, schema: ExtractedTextChunkSchema }]),
     MulterModule.register({
       storage: diskStorage({
@@ -71,8 +74,8 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     }),
 
   ],
-  controllers: [NotificationController, AppController, VideoController, UserController, CourseController, FolderController, MaterialController],
-  providers: [NotificationService, AppService, VideoService, UserService, CourseService, FolderService, MaterialService, BlobStorageService, ExtractionParserService, ExtractionWorkerService, ExtractedTextService, { provide: EXTRACTION_RESULT_WRITER, useExisting: ExtractedTextService }],
+  controllers: [AvatarController, NotificationController, AppController, VideoController, UserController, CourseController, FolderController, MaterialController],
+  providers: [AvatarService, NotificationService, AppService, VideoService, UserService, CourseService, FolderService, MaterialService, BlobStorageService, ExtractionParserService, ExtractionWorkerService, ExtractedTextService, { provide: EXTRACTION_RESULT_WRITER, useExisting: ExtractedTextService }],
 })
 export class AppModule {
     configure(consumer: MiddlewareConsumer) {
@@ -87,6 +90,7 @@ export class AppModule {
         FolderController,
         MaterialController,
         NotificationController,
+        AvatarController,
         { path: 'api/v1/user/me', method: RequestMethod.GET },
         { path: 'api/v1/user/me', method: RequestMethod.PATCH },
       );

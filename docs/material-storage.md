@@ -12,7 +12,8 @@ On the backend App Service, configure:
 ```env
 NODE_ENV=production
 AZURE_STORAGE_ACCOUNT_URL=https://iqlockerstorage1904.blob.core.windows.net
-AZURE_STORAGE_CONTAINER=materials
+AZURE_STORAGE_MATERIALS_CONTAINER=materials
+AZURE_STORAGE_AVATARS_CONTAINER=avatars
 MATERIAL_MAX_FILE_BYTES=20000000
 MATERIAL_ACCOUNT_LIMIT_BYTES=500000000
 ```
@@ -275,3 +276,41 @@ The UI does not yet display extracted-text chunks or provide an Analyze action.
 Default processing remains false; implementation/testing did not enable student
 processing or change Azure settings. Final desktop/mobile browser review and live
 Azure/deployed workflow verification remain Step 6.
+
+
+## Separate avatar container
+
+Materials and avatars share AZURE_STORAGE_ACCOUNT_URL and authentication, but use
+separate private containers. Existing storage calls default to materials. Future
+avatar persistence can use the same service with the server-selected kind:
+
+```ts
+await storage.ensureReady('avatars');
+await storage.upload(key, imageBytes, mediaType, signal, 'avatars');
+await storage.download(key, signal, 'avatars');
+await storage.remove(key, 'avatars');
+```
+
+No avatar upload endpoint/profile persistence is added by this configuration step.
+Each container has its own private-access check/cache. Missing avatar config does
+not break materials; avatar operations never fall back to the materials container.
+AZURE_STORAGE_CONTAINER remains a legacy fallback only for materials; the new
+AZURE_STORAGE_MATERIALS_CONTAINER takes priority. Rename the setting in Azure on
+next deployment and add AZURE_STORAGE_AVATARS_CONTAINER=avatars. No new secrets.
+Grant the backend identity and local developer appropriate data access to avatars.
+Restart the backend after configuration changes (container clients are cached).
+
+Check access without writing: `npm run storage:check` and
+`npm run storage:check -- --avatars`. Add `--roundtrip` to either command for a
+disposable upload/download/delete test in that selected container.
+
+## Startup diagnostics
+
+main.ts pings the connected MongoDB database, then checks private access to both
+configured containers in parallel. Successful checks log MongoDB connected and
+Materials/Avatars container private access verified. Container failures emit a
+redacted warning and do not prevent the backend from starting. MongoDB ping or
+HTTP listening failures close the app and set a failing exit code. The listening
+message is printed only after app.listen succeeds and includes the bound port.
+These are point-in-time startup checks, not continuous monitoring or evidence of
+upload/delete permissions. Container checks read properties; they never upload.
