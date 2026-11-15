@@ -5,7 +5,7 @@ import { Schema as MongoSchema, Types } from 'mongoose';
 export class Notification {
     @Prop({ type: MongoSchema.Types.ObjectId, required: true, immutable: true }) owner: Types.ObjectId;
     @Prop({ required: true, immutable: true }) key: string;
-    @Prop({ required: true, enum: ['profile', 'storage', 'extraction'] }) kind: string;
+    @Prop({ required: true, enum: ['profile', 'storage', 'extraction', 'syllabus'] }) kind: string;
     @Prop({ required: true, maxlength: 240 }) message: string;
     @Prop({ required: true }) path: string;
     @Prop({ default: true }) active: boolean;

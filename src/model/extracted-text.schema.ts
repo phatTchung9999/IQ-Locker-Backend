@@ -1,3 +1,4 @@
+import type { PdfTextSpan } from '../extraction/extraction.types.js';
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Schema as MongooseSchema, Types } from 'mongoose';
 
@@ -29,6 +30,10 @@ export class ExtractedTextChunk {
     @Prop({ required: true, min: 1, immutable: true }) extractorVersion: number;
     @Prop({ required: true, min: 0, max: 1999 }) index: number;
     @Prop({ required: true, maxlength: 4000 }) text: string;
+    @Prop({ type: [new MongooseSchema({
+        start: Number, end: Number, transform: [Number], width: Number, height: Number,
+    }, { _id: false })], default: undefined })
+    spans?: PdfTextSpan[];
     @Prop({ type: Number, default: null, min: 1 }) page: number | null;
     @Prop({ required: true, min: 0 }) charStart: number;
     @Prop({ required: true, min: 1 }) charEnd: number;

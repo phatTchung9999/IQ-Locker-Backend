@@ -1,3 +1,4 @@
+import { SyllabusAnalysis } from '../model/syllabus-analysis.schema.js';
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, PayloadTooLargeException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -41,7 +42,8 @@ export class MaterialService implements OnModuleInit, OnModuleDestroy {
         @InjectModel(StorageUsage.name) private readonly usage: Model<StorageUsage>,
         private readonly folders: FolderService, private readonly storage: BlobStorageService,
         @InjectModel(ExtractionJob.name) private readonly jobs: Model<ExtractionJob>,
-        private readonly extractedText: ExtractedTextService) {}
+        private readonly extractedText: ExtractedTextService,
+        @InjectModel(SyllabusAnalysis.name) private readonly analyses: Model<SyllabusAnalysis>) {}
     onModuleInit() {
         materialLimits(); // Fail clearly on invalid quota configuration.
         this.timer = setInterval(() => { void this.recover(); }, 60000);
@@ -192,6 +194,7 @@ export class MaterialService implements OnModuleInit, OnModuleDestroy {
                 if (!current) return false;
                 const usage = await this.usage.findOneAndUpdate({ _id: material.owner }, { $inc: { revision: 1, bytes: -material.sizeBytes } }, { session, returnDocument: 'after' });
                 if (!usage || usage.bytes < 0) throw new Error('Storage accounting needs recovery');
+                await this.analyses.deleteMany({ owner: material.owner, course: material.course, material: id }, { session });
                 await this.extractedText.remove(material.owner, material.course, id, session);
                 await this.jobs.deleteMany({ owner: material.owner, course: material.course, material: id }, { session });
                 await this.materials.deleteOne({ _id: id, cleanupToken: token }, { session });

@@ -1,3 +1,5 @@
+export type PdfTextSpan = { start: number; end: number; transform: number[]; width: number; height: number };
+
 import type { ClientSession } from 'mongoose';
 import type { MaterialDocument } from '../model/material.schema.js';
 import type { ExtractionJobDocument } from '../model/extraction-job.schema.js';
@@ -7,7 +9,7 @@ export class ExtractionFailure extends Error {
 }
 export interface ExtractionResult {
     extractorVersion: number;
-    pages: { page: number | null; text: string }[];
+    pages: { page: number | null; text: string; spans?: PdfTextSpan[] }[];
     textChars: number;
 }
 export const EXTRACTION_RESULT_WRITER = Symbol('EXTRACTION_RESULT_WRITER');

@@ -7,10 +7,11 @@ export function courseModelFixture() {
   const folders = new Map<string, any>();
   const materials = new Map<string, any>();
   const usage = new Map<string, any>();
+  const analyses = new Map<string, any>();
   const jobs = new Map<string, any>();
   const extractions = new Map<string, any>();
   const chunks = new Map<string, any>();
-  const allRecords = [stored, folders, materials, usage, jobs, extractions, chunks];
+  const allRecords = [stored, folders, materials, usage, jobs, analyses, extractions, chunks];
   const equal = (a: any, b: any) => a == null && b == null || a?.toString() === b?.toString();
   const matches = (item: any, filter: any): boolean => Object.entries(filter).every(([key, value]: [string, any]) => {
     if (key === '$or') return value.some((part: any) => matches(item, part));
@@ -76,5 +77,5 @@ export function courseModelFixture() {
       }); }
     };
   }
-  return { CourseModel: model(stored), FolderModel: model(folders, true), MaterialModel: model(materials), UsageModel: model(usage), JobModel: model(jobs), ExtractionModel: model(extractions), ChunkModel: model(chunks), stored, folders, materials, usage, jobs, extractions, chunks };
+  return { CourseModel: model(stored), FolderModel: model(folders, true), MaterialModel: model(materials), UsageModel: model(usage), JobModel: model(jobs), AnalysisModel: model(analyses), ExtractionModel: model(extractions), ChunkModel: model(chunks), stored, folders, materials, usage, jobs, analyses, extractions, chunks };
 }

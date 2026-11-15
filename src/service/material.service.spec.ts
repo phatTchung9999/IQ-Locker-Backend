@@ -16,13 +16,13 @@ const blobs = new Map<string, Buffer>();
 const storage = { ensureReady: vi.fn(async () => undefined), upload: vi.fn(async (key: string, buffer: Buffer) => { blobs.set(key, buffer); }),
     remove: vi.fn(async (key: string) => { blobs.delete(key); }), download: vi.fn(async (key: string) => Readable.from(blobs.get(key)!)) };
 const extractedText = new ExtractedTextService(fixture.ExtractionModel as any, fixture.ChunkModel as any, fixture.MaterialModel as any, fixture.JobModel as any);
-const service = new MaterialService(fixture.MaterialModel as any, fixture.UsageModel as any, folders, storage as any, fixture.JobModel as any, extractedText);
+const service = new MaterialService(fixture.MaterialModel as any, fixture.UsageModel as any, folders, storage as any, fixture.JobModel as any, extractedText, fixture.AnalysisModel as any);
 export const uploadFile = (text: Buffer | string = 'lecture notes', name = 'notes.txt', mimetype = 'text/plain') => ({ buffer: typeof text === 'string' ? Buffer.from(text) : text, originalname: name, mimetype } as Express.Multer.File);
 const owner = new Types.ObjectId(), other = new Types.ObjectId();
 let course: string;
 beforeEach(async () => {
     vi.clearAllMocks(); delete process.env.MATERIAL_ACCOUNT_LIMIT_BYTES;
-    fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); fixture.jobs.clear(); fixture.extractions.clear(); fixture.chunks.clear(); blobs.clear();
+    fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); fixture.jobs.clear(); fixture.analyses.clear(); fixture.extractions.clear(); fixture.chunks.clear(); blobs.clear();
     course = (await courses.create(owner, { name: 'Biology' })).id;
 });
 afterEach(() => { delete process.env.MATERIAL_ACCOUNT_LIMIT_BYTES; });
@@ -45,7 +45,13 @@ it('uploads privately, inherits nearest classified ancestor, projects safe metad
     expect((await service.content(owner, course, document.id)).material.originalFilename).toBe('notes.txt');
     await expect(folders.delete(owner, course, week.id)).rejects.toBeInstanceOf(ConflictException);
     await expect(courses.delete(owner, course)).rejects.toBeInstanceOf(ConflictException);
+    await fixture.AnalysisModel.create([
+        { owner, course: job.course, material: job.material, state: 'ready', suggestions: [] },
+        { owner, course: job.course, material: new Types.ObjectId(), state: 'queued' },
+    ]);
     await service.delete(owner, course, document.id);
+    expect([...fixture.analyses.values()].map(row => row.material.toString())).not.toContain(document.id);
+    expect(fixture.analyses.size).toBe(1);
     expect(blobs.size).toBe(0); expect(fixture.materials.size).toBe(0); expect(fixture.jobs.size).toBe(0); expect(fixture.usage.get(owner.toString()).bytes).toBe(0);
     await folders.delete(owner, course, week.id);
     await courses.delete(owner, course);
@@ -91,7 +97,7 @@ it('persists an ambiguous failed upload and recovers after restart without leaki
     expect(reserved.state).toBe('cleanup_pending'); expect(fixture.usage.get(owner.toString()).bytes).toBeGreaterThan(0);
     await expect(courses.delete(owner, course)).rejects.toBeInstanceOf(ConflictException);
     fixture.materials.get(reserved._id.toString()).retryAt = new Date(0);
-    const restarted = new MaterialService(fixture.MaterialModel as any, fixture.UsageModel as any, folders, storage as any, fixture.JobModel as any, extractedText);
+    const restarted = new MaterialService(fixture.MaterialModel as any, fixture.UsageModel as any, folders, storage as any, fixture.JobModel as any, extractedText, fixture.AnalysisModel as any);
     await restarted.recover();
     expect(blobs.size).toBe(0); expect(fixture.materials.size).toBe(0); expect(fixture.jobs.size).toBe(0); expect(fixture.usage.get(owner.toString()).bytes).toBe(0);
 });

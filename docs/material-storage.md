@@ -314,3 +314,6 @@ HTTP listening failures close the app and set a failing exit code. The listening
 message is printed only after app.listen succeeds and includes the bound port.
 These are point-in-time startup checks, not continuous monitoring or evidence of
 upload/delete permissions. Container checks read properties; they never upload.
+
+See [document analysis workflow](document-analysis-workflow.md) for the end-to-end
+upload and extraction flow and the planned syllabus analysis handoff.

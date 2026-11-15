@@ -1,3 +1,4 @@
+import { SyllabusAnalysis } from '../src/model/syllabus-analysis.schema.js';
 import 'reflect-metadata';
 import { Module } from '@nestjs/common';
 import type { INestApplication, MiddlewareConsumer } from '@nestjs/common';
@@ -36,7 +37,7 @@ const users = [
 const token = (index: number) => `Bearer ${jwt.sign({ email: users[index].email })}`;
 @Module({
   controllers: [CourseController, FolderController, MaterialController],
-  providers: [CourseService, FolderService, MaterialService, { provide: ExtractedTextService, useValue: extractedText }, { provide: getModelToken(ExtractionJob.name), useValue: fixture.JobModel }, { provide: BlobStorageService, useValue: storage }, { provide: getModelToken(StorageUsage.name), useValue: fixture.UsageModel }, { provide: getModelToken(Material.name), useValue: fixture.MaterialModel }, { provide: getModelToken(Folder.name), useValue: fixture.FolderModel }, { provide: getModelToken(Course.name), useValue: fixture.CourseModel },
+  providers: [{ provide: getModelToken(SyllabusAnalysis.name), useValue: fixture.AnalysisModel }, CourseService, FolderService, MaterialService, { provide: ExtractedTextService, useValue: extractedText }, { provide: getModelToken(ExtractionJob.name), useValue: fixture.JobModel }, { provide: BlobStorageService, useValue: storage }, { provide: getModelToken(StorageUsage.name), useValue: fixture.UsageModel }, { provide: getModelToken(Material.name), useValue: fixture.MaterialModel }, { provide: getModelToken(Folder.name), useValue: fixture.FolderModel }, { provide: getModelToken(Course.name), useValue: fixture.CourseModel },
     { provide: JwtService, useValue: jwt }, { provide: UserService, useValue: { getOne: async (email: string) => users.find((user) => user.email === email) ?? null } }],
 })
 class CourseTestModule {
@@ -49,7 +50,7 @@ beforeAll(async () => {
   await app.listen(0, '127.0.0.1');
 });
 afterAll(async () => { await app?.close(); });
-beforeEach(() => { fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); fixture.jobs.clear(); fixture.extractions.clear(); fixture.chunks.clear(); blobs.clear(); });
+beforeEach(() => { fixture.stored.clear(); fixture.folders.clear(); fixture.materials.clear(); fixture.usage.clear(); fixture.jobs.clear(); fixture.analyses.clear(); fixture.extractions.clear(); fixture.chunks.clear(); blobs.clear(); });
 
 it.each(['get', 'post', 'patch', 'delete'] as const)('rejects missing and invalid credentials on %s', async (method) => {
   const url = method === 'patch' || method === 'delete' ? `/api/v1/courses/${new Types.ObjectId()}` : '/api/v1/courses';

@@ -20,7 +20,7 @@ it('extracts a real text PDF with page references in a separate thread', async (
     document.addPage().drawText('Syllabus source page one', { font });
     document.addPage().drawText('Lecture source page two', { font });
     const result = await parser.extract(Buffer.from(await document.save()), 'application/pdf');
-    expect(result.pages).toEqual([{ page: 1, text: expect.stringContaining('Syllabus source page one') }, { page: 2, text: expect.stringContaining('Lecture source page two') }]);
+    expect(result.pages).toEqual([{ page: 1, text: expect.stringContaining('Syllabus source page one'), spans: expect.any(Array) }, { page: 2, text: expect.stringContaining('Lecture source page two'), spans: expect.any(Array) }]);
 });
 it('reports no readable text for image-only/empty PDF pages rather than empty success', async () => {
     await expect(parser.extract(await pdf(), 'application/pdf')).rejects.toMatchObject({ code: 'no_readable_text' });

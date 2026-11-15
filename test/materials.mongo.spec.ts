@@ -1,3 +1,4 @@
+import { SyllabusAnalysisSchema } from '../src/model/syllabus-analysis.schema.js';
 import 'reflect-metadata';
 import 'dotenv/config';
 import { Mongoose, Types } from 'mongoose';
@@ -20,6 +21,7 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
     const Folder = database.model('MaterialTestFolder', FolderSchema.clone(), `${prefix}_folders`);
     const Material = database.model('MaterialTestMaterial', MaterialSchema.clone(), `${prefix}_materials`);
     const Usage = database.model('MaterialTestUsage', StorageUsageSchema.clone(), `${prefix}_usage`);
+    const Analysis = database.model('TestAnalysis', SyllabusAnalysisSchema.clone(), `${prefix}_analyses`);
     const Job = database.model('MaterialTestJob', ExtractionJobSchema.clone(), `${prefix}_jobs`);
     const Extraction = database.model('MaterialTestExtraction', ExtractedTextSchema.clone(), `${prefix}_extractions`);
     const Chunk = database.model('MaterialTestChunk', ExtractedTextChunkSchema.clone(), `${prefix}_chunks`);
@@ -29,16 +31,16 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
     const blobs = new Map<string, Buffer>();
     const storage = { ensureReady: async () => {}, upload: async (key: string, buffer: Buffer) => { blobs.set(key, buffer); },
         download: async (key: string) => Readable.from(blobs.get(key)!), remove: vi.fn(async (key: string) => { blobs.delete(key); }) };
-    const materials = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
+    const materials = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText, Analysis);
     const owner = new Types.ObjectId(), other = new Types.ObjectId();
     const file = (text = 'notes') => ({ originalname: 'notes.txt', mimetype: 'text/plain', buffer: Buffer.from(text) } as Express.Multer.File);
     beforeAll(async () => {
         await database.connect(process.env.MONGO_URI ?? 'mongodb://localhost:27017/Stream', { serverSelectionTimeoutMS: 8000 });
-        await Promise.all([Course.init(), Folder.init(), Material.init(), Usage.init(), Job.init(), Extraction.init(), Chunk.init()]);
+        await Promise.all([Course.init(), Folder.init(), Material.init(), Usage.init(), Job.init(), Analysis.init(), Extraction.init(), Chunk.init()]);
     }, 20000);
     afterAll(async () => {
         delete process.env.MATERIAL_ACCOUNT_LIMIT_BYTES;
-        try { if (database.connection.readyState === 1) for (const model of [Course, Folder, Material, Usage, Job, Extraction, Chunk]) {
+        try { if (database.connection.readyState === 1) for (const model of [Course, Folder, Material, Usage, Job, Analysis, Extraction, Chunk]) {
             if (!model.collection.name.startsWith(prefix)) throw new Error('Invalid test collection');
             await model.collection.drop().catch((error) => { if (error.code !== 26) throw error; });
         } } finally { await database.disconnect(); }
@@ -95,7 +97,7 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
         const pending = await Material.findOne({ course }); expect(pending!.state).toBe('cleanup_pending');
         expect(blobs.has(pending!.storageKey)).toBe(true);
         await Material.updateOne({ _id: pending!._id }, { $set: { retryAt: new Date(0) } });
-        const restarted = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
+        const restarted = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText, Analysis);
         await restarted.recover();
         expect(await Material.exists({ _id: pending!._id })).toBeNull(); expect(blobs.has(pending!.storageKey)).toBe(false);
         expect((await Usage.findById(owner))!.bytes).toBe(0);
@@ -108,7 +110,7 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
         await expect(materials.delete(deletionOwner, course, material.id)).rejects.toBeInstanceOf(ServiceUnavailableException);
         await expect(materials.content(deletionOwner, course, material.id)).rejects.toBeInstanceOf(ConflictException);
         await Material.updateOne({ _id: material.id }, { $set: { retryAt: new Date(0) } });
-        const secondWorker = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
+        const secondWorker = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText, Analysis);
         await Promise.all([materials.recover(), secondWorker.recover()]);
         expect((await Usage.findById(deletionOwner))!.bytes).toBe(0); expect(await Material.exists({ _id: material.id })).toBeNull();
     }, 30000);
@@ -123,7 +125,7 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
         expect(pending!.processingStatus).toBe('not_started');
         expect(await Job.countDocuments({ course })).toBe(0);
         await Material.updateOne({ _id: pending!._id }, { $set: { retryAt: new Date(0) } });
-        const restarted = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
+        const restarted = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText, Analysis);
         await restarted.recover();
         expect(await Material.countDocuments({ course })).toBe(0);
         expect(await Job.countDocuments({ course })).toBe(0);
@@ -135,7 +137,7 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Material MongoDB trans
         const material = await materials.upload(jobOwner, course, undefined, file());
         await Job.deleteMany({ material: material.id });
         await Material.updateOne({ _id: material.id }, { $set: { processingStatus: 'not_started' } });
-        const second = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText);
+        const second = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, extractedText, Analysis);
         await Promise.all([materials.catchUpExtractionJobs(), second.catchUpExtractionJobs()]);
         expect(await Job.countDocuments({ material: material.id })).toBe(1);
         expect((await Material.findById(material.id))!.processingStatus).toBe('queued');

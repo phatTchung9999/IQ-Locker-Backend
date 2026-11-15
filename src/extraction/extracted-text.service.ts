@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { SyllabusAnalysis } from '../model/syllabus-analysis.schema.js';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import type { ClientSession } from 'mongoose';
@@ -20,7 +21,8 @@ export class ExtractedTextService implements ExtractionResultWriter {
     constructor(@InjectModel(ExtractedText.name) private readonly results: Model<ExtractedText>,
         @InjectModel(ExtractedTextChunk.name) private readonly chunks: Model<ExtractedTextChunk>,
         @InjectModel(Material.name) private readonly materials: Model<Material>,
-        @InjectModel(ExtractionJob.name) private readonly jobs: Model<ExtractionJob>) {}
+        @InjectModel(ExtractionJob.name) private readonly jobs: Model<ExtractionJob>,
+        @Optional() @InjectModel(SyllabusAnalysis.name) private readonly analyses?: Model<SyllabusAnalysis>) {}
     async save(result: ExtractionResult, material: MaterialDocument, job: ExtractionJobDocument, session: ClientSession) {
         // The caller owns the course transaction. Also guard this write boundary
         // so no alternative caller can publish a stale material or lease.
@@ -38,6 +40,13 @@ export class ExtractedTextService implements ExtractionResultWriter {
         await this.results.create([{ _id: extraction, ...scope, extractorVersion: result.extractorVersion,
             chunkCount: pieces.length, textChars: result.textChars, pageCount: result.pages.length, mediaType: material.mediaType }], { session });
         await this.chunks.insertMany(pieces.map(piece => ({ ...scope, extraction, extractorVersion: result.extractorVersion, ...piece })), { session, ordered: true });
+        if (this.analyses && material.materialType === 'syllabus' && process.env.SYLLABUS_ANALYSIS_ENABLED === 'true' &&
+            (material.mediaType !== 'application/pdf' || pieces.some(piece => piece.spans?.length))) {
+            const identity = { ...scope, extraction, analyzerVersion: 1 };
+            await this.analyses.updateOne(identity, { $setOnInsert: {
+                ...identity, referenceDate: new Date().toISOString().slice(0, 10), state: 'queued',
+            } }, { upsert: true, session });
+        }
     }
     async remove(owner: Types.ObjectId, course: Types.ObjectId, material: Types.ObjectId, session: ClientSession) {
         if (!session.inTransaction()) throw new Error('Extracted text cleanup requires a transaction');

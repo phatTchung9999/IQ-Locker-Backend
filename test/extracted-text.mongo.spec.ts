@@ -1,3 +1,6 @@
+import { SyllabusAnalysisService } from '../src/service/syllabus-analysis.service.js';
+import { SyllabusWorkerService } from '../src/analysis/syllabus-worker.service.js';
+import { SyllabusAnalysisSchema } from '../src/model/syllabus-analysis.schema.js';
 import 'reflect-metadata';
 import 'dotenv/config';
 import { Mongoose, Types } from 'mongoose';
@@ -23,16 +26,17 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Private extracted text
     const Folder = database.model('TextTestFolder', FolderSchema.clone(), `${prefix}_folders`);
     const Material = database.model('TextTestMaterial', MaterialSchema.clone(), `${prefix}_materials`);
     const Usage = database.model('TextTestUsage', StorageUsageSchema.clone(), `${prefix}_usage`);
+    const Analysis = database.model('TestAnalysis', SyllabusAnalysisSchema.clone(), `${prefix}_analyses`);
     const Job = database.model('TextTestJob', ExtractionJobSchema.clone(), `${prefix}_jobs`);
     const Result = database.model('TextTestResult', ExtractedTextSchema.clone(), `${prefix}_results`);
     const Chunk = database.model('TextTestChunk', ExtractedTextChunkSchema.clone(), `${prefix}_chunks`);
-    const models = [Course, Folder, Material, Usage, Job, Result, Chunk];
+    const models = [Course, Folder, Material, Usage, Job, Analysis, Result, Chunk];
     const folders = new FolderService(Course as any, Folder as any, Material as any);
     const courses = new CourseService(Course as any, folders);
-    const text = new ExtractedTextService(Result as any, Chunk as any, Material as any, Job as any);
+    const text = new ExtractedTextService(Result as any, Chunk as any, Material as any, Job as any, Analysis);
     const blobs = new Map<string, Buffer>();
     const storage = { ensureReady: async () => {}, upload: async (key: string, bytes: Buffer) => { blobs.set(key, bytes); }, remove: async (key: string) => { blobs.delete(key); }, download: async (key: string) => Readable.from(blobs.get(key)!) };
-    const materials = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, text);
+    const materials = new MaterialService(Material as any, Usage as any, folders, storage as any, Job as any, text, Analysis);
     const parser = new ExtractionParserService();
     const worker = (engine: any = parser) => new ExtractionWorkerService(Job as any, Material as any, folders, storage as any, engine, text);
     const owner = new Types.ObjectId(), other = new Types.ObjectId();
@@ -74,6 +78,92 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Private extracted text
         expect(await Job.countDocuments({})).toBe(0); expect(blobs.size).toBe(0);
         await expect(text.read(owner, course, material.id)).rejects.toBeInstanceOf(NotFoundException);
     }, 30000);
+    const analysis = new SyllabusAnalysisService(Material, Result, Analysis, folders, Chunk);
+    const analysisWorker = () => new SyllabusWorkerService(Analysis, Result, Chunk, Material, folders);
+    async function queueSyllabus() {
+        const material = await materials.upload(owner, course, undefined, file('Course schedule\r\nFinal exam: 2026-12-15.'));
+        await expect(analysis.start(owner, course, material.id)).rejects.toBeInstanceOf(ConflictException);
+        expect(await worker().runOnce()).toBe(true);
+        const job = await analysis.start(owner, course, material.id);
+        return { material, job };
+    }
+    it('queues, processes, retrieves and deletes private syllabus analysis', async () => {
+        const { material, job } = await queueSyllabus();
+        expect(job.state).toBe('queued');
+        expect(await analysis.start(owner, course, material.id)).toEqual(job);
+        await expect(analysis.results(owner, course, material.id)).rejects.toBeInstanceOf(ConflictException);
+        await expect(analysis.results(other, course, material.id)).rejects.toBeInstanceOf(NotFoundException);
+        expect((await Promise.all([analysisWorker().runOnce(), analysisWorker().runOnce()])).filter(Boolean)).toHaveLength(1);
+        const results = await analysis.results(owner, course, material.id, job.extractionId);
+        expect(results).toMatchObject({ state: 'ready', attempts: 1, suggestions: [{
+            title: 'Final exam', date: '2026-12-15', status: 'pending',
+            sources: [{ quote: 'Final exam: 2026-12-15.', lineStart: 2, lineEnd: 2, page: null }],
+        }] });
+        await expect(analysis.results(owner, course, material.id, new Types.ObjectId().toString())).rejects.toBeInstanceOf(ConflictException);
+        expect(await analysis.upcoming(owner)).toEqual([]);
+        await expect(analysis.review(other, course, material.id, { jobId: job.id, index: 0, status: 'confirmed', date: '2026-12-16' })).rejects.toBeInstanceOf(NotFoundException);
+        await expect(analysis.review(owner, course, material.id, { jobId: job.id, index: 0, status: 'confirmed', date: '2026-02-30' })).rejects.toBeInstanceOf(BadRequestException);
+        await analysis.review(owner, course, material.id, { jobId: job.id, index: 0, status: 'confirmed', date: '2026-12-16' });
+        expect(await analysis.upcoming(owner)).toMatchObject([{ title: 'Final exam', date: '2026-12-16' }]);
+        expect(await analysis.upcoming(other)).toEqual([]);
+        expect((await analysis.results(owner, course, material.id)).suggestions[0]).toMatchObject({ date: '2026-12-15', confirmedDate: '2026-12-16', status: 'confirmed' });
+        await analysis.review(owner, course, material.id, { jobId: job.id, index: 0, status: 'dismissed' });
+        expect(await analysis.upcoming(owner)).toEqual([]);
+        await materials.delete(owner, course, material.id);
+        expect(await Analysis.findById(job.id)).toBeNull();
+        await expect(analysis.results(owner, course, material.id)).rejects.toBeInstanceOf(NotFoundException);
+    }, 30000);
+    it('persists an exam window, replaces it with an exact day, and removes it on dismissal', async () => {
+        const material = await materials.upload(owner, course, undefined,
+            file('Dates: Final - finals week, Dec 10 - 15, time TBA'));
+        expect(await worker().runOnce()).toBe(true);
+        const job = await analysis.start(owner, course, material.id);
+        expect(await analysisWorker().runOnce()).toBe(true);
+        const decision = { jobId: job.id, index: 0, status: 'confirmed' };
+        const range = (await analysis.results(owner, course, material.id)).suggestions[0].dateRange!;
+        expect(range).toMatchObject({ start: expect.stringMatching(/-12-10$/), end: expect.stringMatching(/-12-15$/) });
+        await expect(analysis.review(owner, course, material.id, { ...decision, period: true, date: range.start })).rejects.toBeInstanceOf(BadRequestException);
+        await analysis.review(owner, course, material.id, { ...decision, period: true });
+        expect((await analysis.results(owner, course, material.id)).suggestions[0]).toMatchObject({ confirmedDate: null, confirmedRange: range });
+        expect(await analysis.upcoming(owner)).toMatchObject([{ date: null, dateRange: range }]);
+        const date = range.start.slice(0, 4) + '-12-12';
+        await analysis.review(owner, course, material.id, { ...decision, date });
+        expect(await analysis.upcoming(owner)).toMatchObject([{ date, dateRange: null }]);
+        await analysis.review(owner, course, material.id, { ...decision, status: 'dismissed' });
+        expect(await analysis.upcoming(owner)).toEqual([]);
+        await analysis.review(owner, course, material.id, { ...decision, period: true });
+        await analysis.review(owner, course, material.id, { ...decision, status: 'dismissed' });
+        expect(await analysis.upcoming(owner)).toEqual([]);
+    }, 30000);
+    it('cannot publish an analysis if the document is deleted before publication', async () => {
+        const { material, job } = await queueSyllabus();
+        const original = folders.withCourse.bind(folders);
+        vi.spyOn(folders, 'withCourse').mockImplementationOnce(async (...args) => {
+            expect((await Analysis.findById(job.id))?.state).toBe('processing');
+            await materials.delete(owner, course, material.id);
+            return original(...args);
+        });
+        expect(await analysisWorker().runOnce()).toBe(false);
+        expect(await Analysis.findById(job.id)).toBeNull();
+        expect(await Chunk.countDocuments({ material: material.id })).toBe(0);
+    }, 30000);
+    it('automatically queues only classified syllabi and exposes pending calendar entries', async () => {
+        vi.stubEnv('SYLLABUS_ANALYSIS_ENABLED', 'true');
+        const syllabus = (await folders.list(owner, course)).folders.find(row => row.materialType === 'syllabus')!;
+        const material = await materials.upload(owner, course, syllabus.id, file('Final exam: 2026-12-15.'));
+        expect(await worker().runOnce()).toBe(true);
+        const job = await analysis.status(owner, course, material.id);
+        expect(job.state).toBe('queued');
+        expect(await analysis.start(owner, course, material.id)).toEqual(job);
+        expect(await analysisWorker().runOnce()).toBe(true);
+        expect(await analysis.calendar(owner, material.id)).toMatchObject([{ entries: [{ date: '2026-12-15', status: 'pending' }] }]);
+        expect(await analysis.calendar(other, material.id)).toEqual([]);
+        await analysis.review(owner, course, material.id, { jobId: job.id, index: 0, status: 'confirmed', date: '2026-12-16' });
+        expect(await analysis.calendar(owner, material.id)).toMatchObject([{ entries: [{ date: '2026-12-16', status: 'confirmed' }] }]);
+        const misc = await materials.upload(owner, course, undefined, file('Final exam: 2026-12-15.'));
+        expect(await worker().runOnce()).toBe(true);
+        await expect(analysis.status(owner, course, misc.id)).rejects.toBeInstanceOf(NotFoundException);
+    }, 30000);
     it('extracts a real PDF with source page references', async () => {
         const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica);
         pdf.addPage().drawText('Course syllabus page one', { font });
@@ -84,6 +174,17 @@ describe.skipIf(process.env.IQLOCKER_MONGO_TEST !== '1')('Private extracted text
         expect(response.pageCount).toBe(2);
         expect(response.chunks.map(c => c.page)).toEqual([1, 2]);
         expect(response.chunks[1].text).toContain('Exam reference page two');
+    }, 30000);
+    it.skipIf(!process.env.IQLOCKER_TEST_SYLLABUS)('persists layout from the Discrete Math syllabus and returns ten suggestions', async () => {
+        const { readFile } = await import('node:fs/promises');
+        const material = await materials.upload(owner, course, undefined, file(await readFile(process.env.IQLOCKER_TEST_SYLLABUS!), true));
+        expect(await worker().runOnce()).toBe(true);
+        expect(await Chunk.countDocuments({ material: material.id, 'spans.0': { $exists: true } })).toBeGreaterThan(0);
+        const job = await analysis.start(owner, course, material.id);
+        expect(await analysisWorker().runOnce()).toBe(true);
+        const result = await analysis.results(owner, course, material.id, job.extractionId);
+        expect(result.suggestions.map(row => row.title)).toEqual(['Final', 'Quiz 1', 'Quiz 2', 'Retake 1',
+            'Quiz 3', 'Retake 2', 'Quiz 4', 'Retake 3', 'Quiz 5', 'Retake 4']);
     }, 30000);
     it('paginates bounded chunks using a stable extraction ID and rejects invalid requests', async () => {
         const material = await materials.upload(owner, course, undefined, file('x'.repeat(90000)));

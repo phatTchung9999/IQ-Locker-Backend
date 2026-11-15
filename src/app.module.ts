@@ -1,3 +1,4 @@
+import { SyllabusWorkerService } from './analysis/syllabus-worker.service.js';
 import { Avatar, AvatarSchema } from './model/avatar.schema.js';
 import { AvatarService } from './service/avatar.service.js';
 import { AvatarController } from './controller/avatar.controller.js';
@@ -31,6 +32,9 @@ import { FolderController } from './controller/folder.controller.js';
 import { FolderService } from './service/folder.service.js';
 import { Folder, FolderSchema } from './model/folder.schema.js';
 import { Material, MaterialSchema, StorageUsage, StorageUsageSchema } from './model/material.schema.js';
+import { DeadlineController, SyllabusAnalysisController } from './controller/syllabus-analysis.controller.js';
+import { SyllabusAnalysisService } from './service/syllabus-analysis.service.js';
+import { SyllabusAnalysis, SyllabusAnalysisSchema } from './model/syllabus-analysis.schema.js';
 import { ExtractionJob, ExtractionJobSchema } from './model/extraction-job.schema.js';
 import { MaterialController } from './controller/material.controller.js';
 import { MaterialService } from './service/material.service.js';
@@ -50,7 +54,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     // telemetry, alarms, and more — out of the box. Sign up at https://observe.nestjs.com
     MongooseModule.forRoot(process.env.MONGO_URI ?? 'mongodb://localhost:27017/Stream',),
     MongooseModule.forFeature([{ name: Avatar.name, schema: AvatarSchema }, { name: Notification.name, schema: NotificationSchema }, { name: User.name, schema: UserSchema }]),
-    MongooseModule.forFeature([{ name: Video.name, schema: VideoSchema }, { name: Course.name, schema: CourseSchema }, { name: Folder.name, schema: FolderSchema }, { name: Material.name, schema: MaterialSchema }, { name: StorageUsage.name, schema: StorageUsageSchema }, { name: ExtractionJob.name, schema: ExtractionJobSchema }, { name: ExtractedText.name, schema: ExtractedTextSchema }, { name: ExtractedTextChunk.name, schema: ExtractedTextChunkSchema }]),
+    MongooseModule.forFeature([{ name: Video.name, schema: VideoSchema }, { name: Course.name, schema: CourseSchema }, { name: Folder.name, schema: FolderSchema }, { name: Material.name, schema: MaterialSchema }, { name: StorageUsage.name, schema: StorageUsageSchema }, { name: ExtractionJob.name, schema: ExtractionJobSchema }, { name: SyllabusAnalysis.name, schema: SyllabusAnalysisSchema }, { name: ExtractedText.name, schema: ExtractedTextSchema }, { name: ExtractedTextChunk.name, schema: ExtractedTextChunkSchema }]),
     MulterModule.register({
       storage: diskStorage({
         destination: './public',
@@ -74,8 +78,8 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     }),
 
   ],
-  controllers: [AvatarController, NotificationController, AppController, VideoController, UserController, CourseController, FolderController, MaterialController],
-  providers: [AvatarService, NotificationService, AppService, VideoService, UserService, CourseService, FolderService, MaterialService, BlobStorageService, ExtractionParserService, ExtractionWorkerService, ExtractedTextService, { provide: EXTRACTION_RESULT_WRITER, useExisting: ExtractedTextService }],
+  controllers: [DeadlineController, SyllabusAnalysisController, AvatarController, NotificationController, AppController, VideoController, UserController, CourseController, FolderController, MaterialController],
+  providers: [SyllabusWorkerService, SyllabusAnalysisService, AvatarService, NotificationService, AppService, VideoService, UserService, CourseService, FolderService, MaterialService, BlobStorageService, ExtractionParserService, ExtractionWorkerService, ExtractedTextService, { provide: EXTRACTION_RESULT_WRITER, useExisting: ExtractedTextService }],
 })
 export class AppModule {
     configure(consumer: MiddlewareConsumer) {
@@ -89,6 +93,8 @@ export class AppModule {
         CourseController,
         FolderController,
         MaterialController,
+        SyllabusAnalysisController,
+        DeadlineController,
         NotificationController,
         AvatarController,
         { path: 'api/v1/user/me', method: RequestMethod.GET },

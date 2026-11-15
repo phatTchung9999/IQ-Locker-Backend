@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { SyllabusAnalysisService } from './syllabus-analysis.service.js';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Notification } from '../model/notification.schema.js';
@@ -16,7 +17,8 @@ export class NotificationService {
     constructor(@InjectModel(Notification.name) private readonly notifications: Model<Notification>,
         @InjectModel(User.name) private readonly users: Model<User>,
         @InjectModel(Material.name) private readonly materials: Model<Material>,
-        @InjectModel(StorageUsage.name) private readonly usage: Model<StorageUsage>) {}
+        @InjectModel(StorageUsage.name) private readonly usage: Model<StorageUsage>,
+        @Optional() private readonly analysis?: SyllabusAnalysisService) {}
 
     // Reconcile current conditions when the signed-in client polls. No success spam,
     // no parser exception text, and no duplicate reminders on each refresh.
@@ -40,6 +42,12 @@ export class NotificationService {
                 : `Text extraction needs attention: “${material.title}”.`;
             notices.push({ key: `extraction:${material._id}:${material.version}`, kind: 'extraction', message,
                 path: `/courses/${material.course}${material.folder ? `/folders/${material.folder}` : ''}#material-${material._id}` });
+        }
+        for (const job of await this.analysis?.calendar(owner) ?? []) {
+            const count = job.entries.filter((entry: { status: string }) => entry.status === 'pending').length;
+            if (count) notices.push({ key: `syllabus:${job.jobId}`, kind: 'syllabus',
+                message: `${job.title}: ${count} syllabus ${count === 1 ? 'suggestion' : 'suggestions'} to review.`,
+                path: `/upcoming?materialId=${job.materialId}` });
         }
         if (notices.length) {
             try {

@@ -31,16 +31,23 @@ async function extract() {
             const page = await pdf.getPage(number);
             try {
                 const content = await page.getTextContent();
-                const pieces = [];
+                const pieces = [], spans = [];
+                let offset = 0;
                 for (const item of content.items) {
                     if (typeof item.str !== 'string') continue;
                     const piece = item.str + (item.hasEOL ? '\n' : ' ');
                     textChars += piece.length;
                     if (textChars > maxTextChars) fail('output_limit');
                     if (item.str.trim()) readable = true;
+                    if (item.str.trim() && item.transform?.length === 6 &&
+                        [...item.transform, item.width, item.height].every(Number.isFinite)) {
+                        spans.push({ start: offset, end: offset + item.str.length,
+                            transform: item.transform, width: item.width, height: item.height });
+                    }
                     pieces.push(piece);
+                    offset += piece.length;
                 }
-                pages.push({ page: number, text: pieces.join('') });
+                pages.push({ page: number, text: pieces.join(''), spans });
             } finally { page.cleanup(); }
         }
         if (!readable) fail('no_readable_text');
