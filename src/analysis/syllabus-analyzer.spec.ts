@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { Types } from 'mongoose';
 import { analyzeSyllabus } from './syllabus-analyzer.js';
 
-const fixtures = new URL('../../../plan/Phase_2/fixtures/', import.meta.url);
+const fixtures = new URL('../../docs/fixtures/', import.meta.url);
 const expected = JSON.parse(readFileSync(new URL('expected.json', fixtures), 'utf8'));
 for (const [file, rows] of Object.entries(expected) as [string, any[]][]) {
     it('matches the approved syllabus baseline: ' + file, () => {

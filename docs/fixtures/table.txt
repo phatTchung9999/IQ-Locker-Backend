@@ -1,0 +1,4 @@
+Item | Type | Due
+Research proposal | Assignment | 2026-11-20
+Final | Exam | 2026-12-15
+Reminder: Research proposal due 2026-11-20.

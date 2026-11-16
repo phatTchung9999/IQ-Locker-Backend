@@ -1,0 +1,262 @@
+{
+  "clear.txt": [
+    {
+      "kind": "exam",
+      "title": "Midterm exam",
+      "originalDateText": [
+        "October 14, 2026"
+      ],
+      "date": "2026-10-14",
+      "time": null,
+      "timezone": null,
+      "flags": [],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 2,
+          "quote": "Midterm exam: October 14, 2026."
+        }
+      ]
+    },
+    {
+      "kind": "assignment",
+      "title": "Lab report",
+      "originalDateText": [
+        "November 6, 2026 at 5:00 PM America/New_York"
+      ],
+      "date": "2026-11-06",
+      "time": "17:00",
+      "timezone": "America/New_York",
+      "flags": [],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 3,
+          "quote": "Lab report due November 6, 2026 at 5:00 PM America/New_York."
+        }
+      ]
+    }
+  ],
+  "table.txt": [
+    {
+      "kind": "assignment",
+      "title": "Research proposal",
+      "originalDateText": [
+        "2026-11-20"
+      ],
+      "date": "2026-11-20",
+      "time": null,
+      "timezone": null,
+      "flags": [],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 2,
+          "quote": "Research proposal | Assignment | 2026-11-20"
+        },
+        {
+          "line": 4,
+          "quote": "Reminder: Research proposal due 2026-11-20."
+        }
+      ]
+    },
+    {
+      "kind": "exam",
+      "title": "Final",
+      "originalDateText": [
+        "2026-12-15"
+      ],
+      "date": "2026-12-15",
+      "time": null,
+      "timezone": null,
+      "flags": [],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 3,
+          "quote": "Final | Exam | 2026-12-15"
+        }
+      ]
+    }
+  ],
+  "uncertain.txt": [
+    {
+      "kind": "exam",
+      "title": "Midterm exam",
+      "originalDateText": [
+        "October 14"
+      ],
+      "date": "2026-10-14",
+      "time": null,
+      "timezone": null,
+      "flags": [
+        "assumed_year"
+      ],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 1,
+          "quote": "Midterm exam: October 14."
+        }
+      ],
+      "dateBasis": "current_year"
+    },
+    {
+      "kind": "assignment",
+      "title": "Reflection paper",
+      "originalDateText": [
+        "Week 6"
+      ],
+      "date": null,
+      "time": null,
+      "timezone": null,
+      "flags": [
+        "relative_date"
+      ],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 2,
+          "quote": "Reflection paper due Week 6."
+        }
+      ]
+    },
+    {
+      "kind": "exam",
+      "title": "Final exam",
+      "originalDateText": [
+        "December 15, 2026 at 9:00 AM"
+      ],
+      "date": "2026-12-15",
+      "time": "09:00",
+      "timezone": null,
+      "flags": [
+        "missing_timezone"
+      ],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 3,
+          "quote": "Final exam: December 15, 2026 at 9:00 AM."
+        }
+      ]
+    }
+  ],
+  "conflict.txt": [
+    {
+      "kind": "exam",
+      "title": "Final exam",
+      "originalDateText": [
+        "December 15, 2026",
+        "December 16, 2026"
+      ],
+      "date": null,
+      "time": null,
+      "timezone": null,
+      "flags": [
+        "conflicting_dates"
+      ],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 1,
+          "quote": "Schedule: Final exam December 15, 2026."
+        },
+        {
+          "line": 2,
+          "quote": "Assessment section: Final exam December 16, 2026."
+        }
+      ]
+    }
+  ],
+  "empty.txt": [],
+  "weeks.txt": [
+    {
+      "kind": "assignment",
+      "title": "Project",
+      "originalDateText": [
+        "Friday of Week 6"
+      ],
+      "date": "2026-10-16",
+      "time": null,
+      "timezone": null,
+      "dateRange": null,
+      "dateBasis": "course_week",
+      "flags": [
+        "inferred_week_date"
+      ],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 2,
+          "quote": "Project due Friday of Week 6."
+        }
+      ],
+      "contextSources": [
+        {
+          "line": 1,
+          "quote": "Course term: Fall 2026. Week 1 starts Monday, September 7, 2026. Each week runs Monday through Sunday."
+        }
+      ]
+    },
+    {
+      "kind": "assignment",
+      "title": "Reflection",
+      "originalDateText": [
+        "Week 6"
+      ],
+      "date": null,
+      "time": null,
+      "timezone": null,
+      "dateRange": {
+        "start": "2026-10-12",
+        "end": "2026-10-18"
+      },
+      "dateBasis": "course_week",
+      "flags": [
+        "date_range"
+      ],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 3,
+          "quote": "Reflection due Week 6."
+        }
+      ],
+      "contextSources": [
+        {
+          "line": 1,
+          "quote": "Course term: Fall 2026. Week 1 starts Monday, September 7, 2026. Each week runs Monday through Sunday."
+        }
+      ]
+    },
+    {
+      "kind": "exam",
+      "title": "Midterm exam",
+      "originalDateText": [
+        "October 14"
+      ],
+      "date": "2026-10-14",
+      "time": null,
+      "timezone": null,
+      "dateRange": null,
+      "dateBasis": "course_term",
+      "flags": [
+        "assumed_year"
+      ],
+      "status": "pending",
+      "sources": [
+        {
+          "line": 4,
+          "quote": "Midterm exam: October 14."
+        }
+      ],
+      "contextSources": [
+        {
+          "line": 1,
+          "quote": "Course term: Fall 2026. Week 1 starts Monday, September 7, 2026. Each week runs Monday through Sunday."
+        }
+      ]
+    }
+  ]
+}
